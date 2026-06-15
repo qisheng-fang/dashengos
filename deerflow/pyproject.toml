@@ -1,0 +1,13 @@
+[project]
+name = "deerflow"
+version = "0.1.0-poc"
+description = "DaShengOS DeerFlow 2.0 嵌入模式 daemon (v0.3 spec §35)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # P4.1: LLM 客户端 (SiliconFlow Qwen2.5-72B via OpenAI 兼容协议, spec §35.2)
+    "openai>=1.0,<2.0",
+    # Phase 3 完整版再加: tavily-python, playwright, aiohttp, mcp, langgraph
+]
+
+[tool.uv]
+package = true
