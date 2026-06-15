@@ -1,0 +1,51 @@
+# .github/workflows/e2e.yml · v0.3 Phase 4 hardening
+#
+# Playwright E2E workflow (item #3 from 老板工作清单)
+# 跑法: 跟 ci.yml 并列, push to main + PR 自动跑
+# 只测 landing page smoke (不接 backend) — 完整 Chat 屏 E2E 是后话
+#
+# 跑前需要 (CI 自动):
+#   pnpm install
+#   pnpm e2e:install    # 装 chromium
+#   cd apps/web && pnpm build
+# 然后 pnpm exec playwright test
+
+name: e2e
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  playwright:
+    name: Playwright · web e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: build web
+        run: cd apps/web && pnpm build
+      - name: install playwright browsers
+        run: cd apps/web && pnpm e2e:install
+      - name: run playwright tests
+        run: cd apps/web && pnpm e2e
+      - name: upload playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7
