@@ -19,7 +19,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useBreakpoint, type Breakpoint } from '@/hooks/useBreakpoint'
 import { Link, useLocation, useNavigate } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
-import { MessageSquare, Bot, Zap, FolderOpen, Wrench } from 'lucide-react'
+import { MessageSquare, Bot, Zap, FolderOpen, Wrench, Workflow } from 'lucide-react'
 import { MobileNav } from '@/components/MobileNav'
 
 interface ShellProps {
@@ -31,6 +31,8 @@ const NAV_ITEMS = [
   { to: '/agents', label: 'Agent', icon: Bot },
   { to: '/mcp', label: 'MCP', icon: Zap },
   { to: '/files', label: '文件', icon: FolderOpen },
+  // Track C.2 (2026-06-15) 加 Studio 入口 (ComfyUI 式工作流)
+  { to: '/studio', label: 'Studio', icon: Workflow },
   { to: '/settings', label: '设置', icon: Wrench },
 ]
 
