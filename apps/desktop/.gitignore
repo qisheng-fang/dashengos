@@ -1,0 +1,22 @@
+# apps/desktop/.gitignore · DaShengOS Tauri 2.x wrapper
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# Cargo lock (Tauri 自身用, 不需要 lock-in monorepo)
+src-tauri/Cargo.lock
+
+# Generated icons (用 pnpm tauri icon 生成, 不入 git)
+src-tauri/icons/*.png
+src-tauri/icons/*.icns
+src-tauri/icons/*.ico
+!src-tauri/icons/.gitkeep
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
