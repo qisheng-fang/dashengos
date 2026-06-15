@@ -4,9 +4,9 @@
 # 老板原则 #2: 0 行业务逻辑,薄薄一层协议适配
 #
 # 职责:
-#   1. AG-UI protocol 解析 (从 FastAPI /api/copilotkit 收的 GraphQL mutation)
+#   1. AG-UI protocol 解析 (从 FastAPI /api/agent 收的 GraphQL mutation)
 #   2. 翻译成 DeerFlow daemon JSON-RPC 调用
-#   3. 流式把 deerflow 响应 push 给 CopilotKit client
+#   3. 流式把 deerflow 响应 push 给前端 client
 #
 # 这是 v0.3 spec ADR-050 §4 标注的 'Adapter Boundary 模板' 位置:
 #   `agent/hermes_brain.py` → `deerflow/hermes-adapter.py`
@@ -167,14 +167,14 @@ def to_agui_event(event: dict, thread_id: str, run_id: str) -> dict:
 
 
 # ====================================================================
-# 主入口 · 调 DaShengOS backend 的 /api/copilotkit
+# 主入口 · 调 DaShengOS backend 的 /api/agent
 # ====================================================================
 async def handle_agui_request(body: dict) -> dict:
     """FastAPI 端点 handler: 收 AG-UI mutation,转发 DeerFlow daemon
 
     用法 (deerflow/main.py 里 wire):
-        @app.post("/api/copilotkit")
-        async def copilotkit(request: Request):
+        @app.post("/api/agent")
+        async def agent_endpoint(request: Request):
             body = await request.json()
             return await handle_agui_request(body)
     """
@@ -276,7 +276,7 @@ async def _fallback_to_direct_llm(parsed: dict, thread_id: str, run_id: str) -> 
 # 信息端点 (spec §35.4 agent.list)
 # ====================================================================
 async def info_endpoint() -> dict:
-    """返回给 /api/copilotkit info method (CopilotKit 列可用 agent)"""
+    """返回给 /api/agent info method (列可用 agent)"""
     if DEERFLOW_ENABLED and Path(SOCKET_PATH).exists():
         try:
             async with DeerFlowClient(timeout=2.0) as client:

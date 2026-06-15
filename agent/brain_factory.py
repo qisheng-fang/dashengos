@@ -2,11 +2,16 @@
 BrainFactory — 根据环境变量选 AgentBrain 实现
 ==============================================
 
-B 阶段: 默认 HermesBrain (hermes-agent 作为大脑)
+B 阶段: 默认 DeerFlowBrain (DeerFlow 2.0 作为核心驱动, 底层 LLM engine 是 hermes-agent)
 A 阶段: 默认 DashengBrain (自写 AIAgent, 还在 draft)
 
+历史: 6/15 之前默认是 HermesBrain, 6/15 老板拍板切到 DeerFlowBrain
+  - hermes-brain 还在 _BACKEND_REGISTRY 里, 通过 env DASHENG_BRAIN_BACKEND=hermes 可切回
+  - DeerFlow 2.0 = deerflow_brain.py (走 deerflow/hermes_adapter.py daemon 路径)
+  - 切换零代码改动, UI 不变
+
 切换: 改 DASHENG_BRAIN_BACKEND 环境变量, 或直接调用
-      brain_factory.create_brain("dasheng")
+      brain_factory.create_brain("hermes")  # 切回旧引擎
 
 不重启服务热切换: 删 self._current, 下次 create_brain 重新实例化
 """
@@ -52,7 +57,7 @@ def _register_backends() -> None:
 def create_brain(backend: str | None = None, config: dict[str, Any] | None = None) -> AgentBrain:
     """工厂方法: 选 backend, 实例化 brain。"""
     _register_backends()
-    backend = backend or os.environ.get("DASHENG_BRAIN_BACKEND", "hermes")
+    backend = backend or os.environ.get("DASHENG_BRAIN_BACKEND", "deerflow")
     if backend not in _BACKEND_REGISTRY:
         available = ", ".join(_BACKEND_REGISTRY.keys()) or "(无)"
         raise RuntimeError(

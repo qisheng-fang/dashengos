@@ -1,0 +1,18 @@
+# Dasheng Agent Bridge (B 阶段) — Python 依赖
+# 老板 2026-06-15 拍板: hermes-agent 是大脑, 走 vendor 路径 (锁版本)
+#
+# 安装:
+#   cd /Users/apple/Desktop/ai-workbench-v2
+#   uv venv agent/.venv --python 3.11
+#   source agent/.venv/bin/activate
+#   uv pip install -e /Users/apple/.hermes/hermes-agent    # 锁版本 v0.13.0 (commit 1af2e18d4)
+#   uv pip install -r agent/requirements.txt
+
+# ─── 我们自己的服务 ──────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.5.0
+
+# ─── LLM (经 hermes 间接用, 这里列是方便本地直接调测试) ──────────────
+# 不锁版本号, 让 hermes-agent 自己的 pyproject.toml 锁 — 我们只 import 不直接装
+# 实际用哪个 provider 由 OPENROUTER_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY 决定

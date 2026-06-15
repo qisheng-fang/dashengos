@@ -1,7 +1,8 @@
 // apps/web/src/screens/Chat.tsx · 2026-06-15
-// 直连 :8001 Python hermes_brain (CopilotKit AG-UI GraphQL 协议) — 通过 src/lib/agent-client.ts
+// 直连 :8001 Python DeerFlow 2.0 backend (AG-UI GraphQL 协议) — 通过 src/lib/agent-client.ts
 // 不再打 :8000 (那个后端没 /api/v1/sessions/:id/messages 路由)
 // 历史消息持久化到 localStorage (老板 hard reload 不丢历史)
+// 6/15 老板拍板: backend 改用 deerflow (底层 LLM engine 还是 hermes-agent), 路径 /api/copilotkit → /api/agent
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { Card } from '@/components/ui/card'
@@ -148,7 +149,7 @@ export function Chat() {
       <header className="px-6 py-3 border-b border-neutral-800">
         <h1 className="text-sm font-medium text-neutral-100 truncate">{title}</h1>
         <div className="text-xs text-neutral-400 mt-0.5 font-mono">
-          thread #{id?.slice(-12)} · backend :8001 (hermes · Qwen2.5-72B)
+          thread #{id?.slice(-12)} · backend :8001 (deerflow · Qwen2.5-72B)
         </div>
       </header>
 
@@ -173,7 +174,7 @@ export function Chat() {
               {user ? `${user.username}, 发条消息开始吧` : '发条消息开始吧'}
             </p>
             <p className="text-xs text-neutral-600">
-              后端: <code className="text-brand">:8001/api/copilotkit</code> (hermes_agent · AG-UI 协议)
+              后端: <code className="text-brand">:8001/api/agent</code> (deerflow · AG-UI 协议)
             </p>
           </div>
         )}
@@ -209,7 +210,7 @@ export function Chat() {
             <div className="flex-shrink-0 w-8 h-8 rounded-full bg-semantic-info/20 flex items-center justify-center">
               <Loader2 size={16} className="text-semantic-info animate-spin" />
             </div>
-            <div className="text-sm text-neutral-400">hermes_agent 推理中...</div>
+            <div className="text-sm text-neutral-400">deerflow 推理中...</div>
           </div>
         )}
         <div ref={bottomRef} />
