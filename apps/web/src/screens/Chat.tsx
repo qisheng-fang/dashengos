@@ -3,14 +3,27 @@
 // 不再打 :8000 (那个后端没 /api/v1/sessions/:id/messages 路由)
 // 历史消息持久化到 localStorage (老板 hard reload 不丢历史)
 // 6/15 老板拍板: backend 改用 deerflow (底层 LLM engine 还是 hermes-agent), 路径 /api/copilotkit → /api/agent
-import { useEffect, useRef, useState } from 'react'
+// Track B.3 (2026-06-15) 加: activeAgent 状态 + 3 社媒 agent 路由 (Douyin/Xhs/Wechat → :8000 /api/v1/social)
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Send, Paperclip, AtSign, Bot, User, Loader2, Square } from 'lucide-react'
+import {
+  Send,
+  Paperclip,
+  AtSign,
+  Bot,
+  User,
+  Loader2,
+  Square,
+  Video,
+  BookOpen,
+  Newspaper,
+} from 'lucide-react'
 import { useAuthStore } from '@/lib/auth-store'
 import { agentChat, type AgentMessage } from '@/lib/agent-client'
+import { socialExecuteAuto } from '@/lib/social-media-client'
 
 interface UiMessage {
   id: string
@@ -66,7 +79,28 @@ export function Chat() {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Track B.3 · activeAgent — 'default' 走 :8001 DeerFlow LLM; 3 social 走 :8000 /api/v1/social
+  const [activeAgent, setActiveAgent] = useState<'default' | 'DouyinAgent' | 'XiaohongshuAgent' | 'WechatAgent'>('default')
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // 3 社媒 agent 配置 (跟 packages/backend BUILTIN_AGENTS 对齐)
+  const SOCIAL_AGENTS = useMemo(
+    () => ({
+      DouyinAgent: { name: '抖音', icon: Video, color: 'text-pink-400' },
+      XiaohongshuAgent: { name: '小红书', icon: BookOpen, color: 'text-rose-400' },
+      WechatAgent: { name: '公众号', icon: Newspaper, color: 'text-emerald-400' },
+    }),
+    [],
+  )
+
+  // 关键字自动路由 — 输入含 抖音/小红书/微信 字样, 自动切 social agent
+  function autoRouteAgent(text: string): 'default' | 'DouyinAgent' | 'XiaohongshuAgent' | 'WechatAgent' {
+    const t = text.toLowerCase()
+    if (/(抖音|douyin|tiktok)/i.test(text) || /douyin|tiktok/.test(t)) return 'DouyinAgent'
+    if (/(小红书|xhs|xiaohongshu|种草)/i.test(text) || /xhs|xiaohongshu/.test(t)) return 'XiaohongshuAgent'
+    if (/(公众号|微信|wechat|推文|订阅号|服务号)/i.test(text) || /wechat|mp/.test(t)) return 'WechatAgent'
+    return 'default'
+  }
 
   // 加载历史 (localStorage)
   useEffect(() => {
@@ -99,6 +133,12 @@ export function Chat() {
     const text = draft.trim()
     if (!text) return
 
+    // Track B.3 · 输入框 关键字自动路由 (不打断用户, 仅预设)
+    const targetAgent = autoRouteAgent(text)
+    if (targetAgent !== 'default') {
+      setActiveAgent(targetAgent)
+    }
+
     const userMsg: UiMessage = {
       id: newId(),
       role: 'user',
@@ -116,6 +156,49 @@ export function Chat() {
     setDraft('')
     setSending(true)
     setError(null)
+
+    // Track B.3 · 按 activeAgent 路由: social 走 :8000 /api/v1/social, 其他走 :8001 DeerFlow
+    if (targetAgent !== 'default') {
+      try {
+        const res = await socialExecuteAuto(targetAgent, { message: text })
+        const replyText = res.content
+          ? res.content
+          : res.error_human || res.error || 'social agent 返回空结果'
+        // 后端 'auto' 返 data: { steps, last_step }, 提取 details 给老板看
+        const data = res.data as { steps?: Array<{ step: string; ok: boolean; data?: unknown; error?: string }>; last_step?: unknown } | undefined
+        const detailParts: string[] = []
+        if (data?.steps) {
+          for (const s of data.steps) {
+            const stepResult = (s.data as any)?.is_real !== undefined
+              ? `is_real=${(s.data as any).is_real}`
+              : (s.data as any)?.upload_id
+                ? `upload_id=${(s.data as any).upload_id}`
+                : ''
+            detailParts.push(`- **${s.step}**: ${s.ok ? 'OK' : 'FAIL'}${stepResult ? ' (' + stepResult + ')' : ''}${s.error ? ' · ' + s.error : ''}`)
+          }
+        }
+        const detail = detailParts.length > 0 ? '\n\n' + detailParts.join('\n') : ''
+        const isReal = res.is_real ? '\n\n✅ **真数据接入**' : '\n\n⚠️ **Mock 数据** (worker 不可达 或 凭证缺失)'
+        const assistantMsg: UiMessage = {
+          id: newId(),
+          role: 'assistant',
+          content: `${replyText}${detail}${isReal}`,
+          timestamp: Date.now(),
+          latency_ms: res.duration_ms,
+        }
+        const updated = [...next, assistantMsg]
+        setMessages(updated)
+        saveHistory(id, updated)
+        if (!res.ok) {
+          setError(res.error_human || res.error || 'social agent 调用失败')
+        }
+      } catch (e) {
+        setError((e as Error).message)
+      } finally {
+        setSending(false)
+      }
+      return
+    }
 
     try {
       const res = await agentChat({
@@ -144,12 +227,53 @@ export function Chat() {
     }
   }
 
+  // Track B.3 · Agent 切换器配置 (activeAgent + 3 社媒)
+  const agentOptions = [
+    { id: 'default' as const, name: '默认 LLM', icon: Bot, color: 'text-semantic-info' },
+    ...Object.entries(SOCIAL_AGENTS).map(([id, cfg]) => ({
+      id: id as 'DouyinAgent' | 'XiaohongshuAgent' | 'WechatAgent',
+      ...cfg,
+    })),
+  ]
+
   return (
     <div className="flex flex-col h-[calc(100vh-3.5rem)]">
       <header className="px-6 py-3 border-b border-neutral-800">
-        <h1 className="text-sm font-medium text-neutral-100 truncate">{title}</h1>
-        <div className="text-xs text-neutral-400 mt-0.5 font-mono">
-          thread #{id?.slice(-12)} · backend :8001 (deerflow · Qwen2.5-72B)
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-sm font-medium text-neutral-100 truncate">{title}</h1>
+            <div className="text-xs text-neutral-400 mt-0.5 font-mono">
+              thread #{id?.slice(-12)} ·{' '}
+              {activeAgent === 'default'
+                ? 'backend :8001 (deerflow · Qwen2.5-72B)'
+                : `social :8000 → ${activeAgent}`}
+            </div>
+          </div>
+          {/* Track B.3 · 4 Agent 切换器 (默认 + 3 社媒) */}
+          <div className="flex items-center gap-1 bg-neutral-900 border border-neutral-800 rounded-lg p-1 flex-shrink-0">
+            {agentOptions.map((a) => {
+              const Icon = a.icon
+              const isActive = a.id === activeAgent
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => setActiveAgent(a.id)}
+                  disabled={sending}
+                  data-testid={`agent-tab-${a.id}`}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                    isActive
+                      ? `bg-brand/15 ${a.color} ring-1 ring-brand/40`
+                      : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
+                  } ${sending ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                  title={a.name}
+                >
+                  <Icon size={13} aria-hidden="true" />
+                  <span className="hidden sm:inline">{a.name}</span>
+                </button>
+              )
+            })}
+          </div>
         </div>
       </header>
 
