@@ -4,6 +4,7 @@
 // 历史消息持久化到 localStorage (老板 hard reload 不丢历史)
 // 6/15 老板拍板: backend 改用 deerflow (底层 LLM engine 还是 hermes-agent), 路径 /api/copilotkit → /api/agent
 // Track B.3 (2026-06-15) 加: activeAgent 状态 + 3 社媒 agent 路由 (Douyin/Xhs/Wechat → :8000 /api/v1/social)
+// Track C.1 (2026-06-15) 加: 8 agent tab 切换器 (含 3 社媒 + 5 sandbox agent 占位)
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { Card } from '@/components/ui/card'
@@ -24,6 +25,7 @@ import {
 import { useAuthStore } from '@/lib/auth-store'
 import { agentChat, type AgentMessage } from '@/lib/agent-client'
 import { socialExecuteAuto } from '@/lib/social-media-client'
+import { AgentTabBar, type AgentTabId } from '@/components/chat-hermes/AgentTabBar'
 
 interface UiMessage {
   id: string
@@ -236,6 +238,16 @@ export function Chat() {
     })),
   ]
 
+  // Track C.1 · 当前 activeAgent 映射到 AgentTabBar tab id
+  const tabId: AgentTabId =
+    activeAgent === 'default'
+      ? 'default'
+      : activeAgent === 'DouyinAgent'
+        ? 'DouyinAgent'
+        : activeAgent === 'XiaohongshuAgent'
+          ? 'XiaohongshuAgent'
+          : 'WechatAgent'
+
   return (
     <div className="flex flex-col h-[calc(100vh-3.5rem)]">
       <header className="px-6 py-3 border-b border-neutral-800">
@@ -274,6 +286,22 @@ export function Chat() {
               )
             })}
           </div>
+          {/* Track C.1 · 10 agent tab 切换器 (8 sandbox + 3 social, 含 default) */}
+          <AgentTabBar
+            active={tabId}
+            onChange={(id) => {
+              if (id === 'default') {
+                setActiveAgent('default')
+              } else if (
+                id === 'DouyinAgent' ||
+                id === 'XiaohongshuAgent' ||
+                id === 'WechatAgent'
+              ) {
+                setActiveAgent(id)
+              }
+              // sandbox tab (EcommerceAgent/CRMAgent 等) 暂未接 social, 走 default
+            }}
+          />
         </div>
       </header>
 
