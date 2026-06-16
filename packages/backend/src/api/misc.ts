@@ -99,6 +99,45 @@ async function callSandbox(method: string, params: unknown, timeoutMs = 30_000):
   })
 }
 
+// Phase B.5 (2026-06-16) tool_permissions 鉴权 (默认 deny, 跟 tool_pattern 匹配才放)
+//   match 规则: user_id 精确 OR role 匹配 (USER/ADMIN/GUEST) AND tool_pattern 匹配
+//   tool_pattern 支持 % 通配 ('sandbox.%' / 'file.*' / '*')
+//   任何 allow=0 的规则先匹配 → 403
+//   都没 allow=1 的规则 → 403 (fail-secure, 没显式授权 = 拒)
+function checkToolPermission(
+  userId: string,
+  role: 'ADMIN' | 'USER' | 'GUEST',
+  toolId: string,
+): { allow: boolean; require_confirm: boolean; reason: string } {
+  // SQL LIKE 模式: 'sandbox.exec' 精确, 'sandbox.%' 通配, '*' 全部
+  // 查 (user_id 精确 OR role 匹配) AND pattern 匹配 的所有行
+  const rows = sqlite
+    .prepare(
+      `SELECT tool_pattern, allow, require_confirm
+       FROM tool_permissions
+       WHERE (user_id = ? OR role = ?)
+         AND (tool_pattern = ? OR tool_pattern = ? OR tool_pattern = '*' OR tool_pattern LIKE ?)`,
+    )
+    .all(userId, role, toolId, `${toolId.split('.')[0]}.%`, `${toolId}.%`) as Array<{
+    tool_pattern: string
+    allow: number
+    require_confirm: number
+  }>
+
+  // 任何 allow=0 先匹配 → 拒
+  const deny = rows.find((r) => r.allow === 0)
+  if (deny) {
+    return { allow: false, require_confirm: false, reason: `denied by pattern ${deny.tool_pattern}` }
+  }
+  // 都没匹配 → 默认 deny (fail-secure)
+  if (rows.length === 0) {
+    return { allow: false, require_confirm: false, reason: 'no allow rule matches (fail-secure default)' }
+  }
+  // 任何 require_confirm=1 → 标 HITL (Phase C 真正接 HITL 流, Phase B.5 先允许但记日志)
+  const needConfirm = rows.some((r) => r.require_confirm === 1)
+  return { allow: true, require_confirm: needConfirm, reason: `allowed by ${rows.length} rule(s)` }
+}
+
 export async function toolRoutes(app: FastifyInstance) {
   // GET /tools — 列 sandbox 23 IPC (从 main.go 抄, 静态列表)
   app.get('/', { preHandler: [app.authenticate] }, async (_req, reply) => {
@@ -109,11 +148,28 @@ export async function toolRoutes(app: FastifyInstance) {
   })
 
   // POST /tools/:id/invoke — 真调 sandbox via unix socket (JSON-RPC 2.0)
+  // Phase B.5 (2026-06-16) 加 tool_permissions 鉴权 — 之前任何登录用户能调 23 IPC
   app.post('/:id/invoke', { preHandler: [app.authenticate] }, async (req, reply) => {
     const toolId = (req.params as { id: string }).id
     const known = SANDBOX_TOOLS.find((t) => t.id === toolId)
     if (!known) {
       return reply.code(404).send({ code: 'TOOL_NOT_FOUND', tool_id: toolId })
+    }
+    const userId = req.user!.id
+    const role = req.user!.role
+    // 1. 鉴权
+    const perm = checkToolPermission(userId, role, toolId)
+    if (!perm.allow) {
+      app.log.warn({ userId, toolId, reason: perm.reason }, 'tool invoke denied')
+      return reply.code(403).send({
+        code: 'TOOL_PERMISSION_DENIED',
+        tool_id: toolId,
+        reason: perm.reason,
+      })
+    }
+    if (perm.require_confirm) {
+      // Phase B.5: HITL 还没接, 先 log, Phase C 加显式确认流
+      app.log.info({ userId, toolId, reason: perm.reason }, 'tool invoke requires confirm (Phase C HITL)')
     }
     const parsed = SandboxInvokeBody.safeParse(req.body || {})
     if (!parsed.success) {
@@ -128,6 +184,8 @@ export async function toolRoutes(app: FastifyInstance) {
         executed_at: start,
         duration_ms: Date.now() - start,
         source: 'sandbox',
+        permission_reason: perm.reason,
+        require_confirm: perm.require_confirm,
       })
     } catch (e) {
       return reply.code(502).send({
