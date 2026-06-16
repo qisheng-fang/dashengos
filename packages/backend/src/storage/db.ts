@@ -15,7 +15,7 @@ import { config } from '../config.js'
 //   sqlite:./data/x.db        → ./data/x.db   (相对)
 //   sqlite:///abs/path        → /abs/path     (绝对)
 // 之前只 replace(/^file:/) 会把 sqlite:///./x 当字面文件名,后端跑去 packages/backend/sqlite:/data/x.db
-const rawPath = config.DATABASE_URL.replace(/^(file|sqlite):\/?\/?/, '')
+const rawPath = config.DATABASE_URL.replace(/^(file|sqlite):/, '')
 const dbPath = isAbsolute(rawPath) ? rawPath : resolve(process.cwd(), rawPath)
 const dbDir = dirname(dbPath)
 if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true })
