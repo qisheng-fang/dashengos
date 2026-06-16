@@ -1,0 +1,67 @@
+#!/bin/bash
+# .githooks/pre-commit · Phase D.1 (2026-06-16)
+# 防止 .env / *secret* / 真实 key 进 git
+#
+# 安装: git config core.hooksPath .githooks
+# (项目级, 不会影响全局 hooks)
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+
+# 待 commit 的文件列表
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+FAIL=0
+
+# 1. 拒 .env / .env.* (除 .env.example)
+for f in $STAGED; do
+  base=$(basename "$f")
+  case "$base" in
+    .env|.env.*)
+      if [ "$base" != ".env.example" ]; then
+        echo -e "${RED}❌ BLOCKED: '$f' 不能 commit (.env 含明文 key)${NC}"
+        echo "   解法: 把本地真值塞 .env (gitignore 覆盖), commit 改 .env.example"
+        FAIL=1
+      fi
+      ;;
+  esac
+done
+
+# 2. 拒 secret / credential 文件名
+for f in $STAGED; do
+  base=$(basename "$f")
+  case "$base" in
+    *secret*|*credential*|*password*|*private_key*|*.pem|*.key)
+      echo -e "${RED}❌ BLOCKED: '$f' 文件名疑似含 secret${NC}"
+      FAIL=1
+      ;;
+  esac
+done
+
+# 3. 内容扫常见 secret pattern (heuristic)
+PATTERNS='sk-[a-zA-Z0-9]{20,}|sk_live_|sk_test_|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'
+for f in $STAGED; do
+  # 只扫文本类文件 (< 1MB)
+  if [ -f "$f" ] && [ $(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null) -lt 1048576 ]; then
+    if grep -lE "$PATTERNS" "$f" 2>/dev/null > /dev/null; then
+      echo -e "${RED}❌ BLOCKED: '$f' 含疑似 secret pattern${NC}"
+      echo "   检测: sk- / sk_live_ / sk_test_ / AKIA / ghp_ / PRIVATE KEY"
+      FAIL=1
+    fi
+  fi
+done
+
+if [ $FAIL -eq 1 ]; then
+  echo -e "${RED}Commit 拒绝. 用 'git commit --no-verify' 跳过 (不推荐)${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}✓ pre-commit secret scan 通过${NC}"
+exit 0

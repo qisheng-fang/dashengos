@@ -1,0 +1,105 @@
+# Prometheus alert rules · DaShengOS v0.3 (Stream 5 audit #5 P0)
+# Phase D.5 (2026-06-16) 补 4 类核心 alert: down / error rate / latency / 资源
+# 注意: prometheus.yml 已 ref rule_files: "/etc/prometheus/rules/*.yml"
+#       Docker 部署时挂此目录进去; 本地 dev 用 prometheus --rules.file 直接指
+
+groups:
+  # ============================================================================
+  # 1. 服务存活 (up == 0 持续 1min)
+  # ============================================================================
+  - name: dasheng-up
+    interval: 30s
+    rules:
+      - alert: BackendDown
+        expr: up{job="dasheng-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: backend
+        annotations:
+          summary: "Backend down (instance {{ $labels.instance }})"
+          description: "DaShengOS backend has been unreachable for >1m. Check server.ts log + oncall."
+
+      - alert: SandboxDown
+        expr: up{job="dasheng-sandbox"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: sandbox
+        annotations:
+          summary: "Sandbox down (instance {{ $labels.instance }})"
+          description: "Sandbox sidecar unreachable >1m. Check sandbox-exporter log."
+
+  # ============================================================================
+  # 2. 错误率 (5xx 比例 > 1% 持续 5m)
+  # ============================================================================
+  - name: dasheng-errors
+    interval: 30s
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="dasheng-backend",status=~"5.."}[5m]))
+          / sum(rate(http_requests_total{job="dasheng-backend"}[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          component: backend
+        annotations:
+          summary: "Backend 5xx rate > 1% (5m)"
+          description: "当前 5xx 占比 {{ $value | humanizePercentage }} . 看 server.log 找堆栈."
+
+  # ============================================================================
+  # 3. 延迟 (p95 > 2s 持续 5m)
+  # ============================================================================
+  - name: dasheng-latency
+    interval: 30s
+    rules:
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="dasheng-backend"}[5m])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "Backend p95 latency > 2s (5m)"
+          description: "p95 = {{ $value }}s. 看是否 LLM 上游慢 (SiliconFlow 限流) 或 DB lock."
+
+  # ============================================================================
+  # 4. 资源 (DB 文件大小 + login lockout 风暴)
+  # ============================================================================
+  - name: dasheng-resources
+    interval: 1m
+    rules:
+      - alert: DBDiskGrowing
+        expr: |
+          predict_linear(dasheng_db_size_bytes[6h], 24*3600) > 10*1024*1024*1024
+        for: 30m
+        labels:
+          severity: warning
+          component: db
+        annotations:
+          summary: "DB 预测 24h 内 > 10GB"
+          description: "当前 {{ $value | humanize1024 }}B. Phase 2 该迁 Postgres."
+
+      - alert: LoginLockoutStorm
+        expr: rate(dasheng_login_attempts_total{result="locked"}[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "Login lockout > 0.5/s 持续 5m"
+          description: "可能 brute force. 看 audit.log + 考虑加 IP 临时黑名单."
+
+      - alert: TokenVerifyFailed
+        expr: rate(dasheng_auth_refresh_total{result="invalid"}[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+          component: auth
+        annotations:
+          summary: "Refresh token invalid 率 > 1/s 持续 10m"
+          description: "可能 token 泄露刷. 查 audit.log 找 user_id 集中度."

@@ -1,0 +1,53 @@
+# Caddyfile · DaShengOS v0.3 · Phase D.2 (2026-06-16)
+# TLS 终止 + 反代 4 服务 (3000 web / 8000 v0.3 backend / 8001 agent bridge / 9100 metrics)
+# 部署: caddy run --config Caddyfile --adapter caddyfile
+# 自动 Let's Encrypt 续期 (caddy 内建)
+# Stream 5 audit #2 P0: 之前无 TLS, 所有流量明文
+
+# 单域名部署 (example.com 替换为你的域名)
+example.com {
+    encode gzip
+
+    # 前端 (Vite build → nginx:alpine, 见 apps/web/Dockerfile)
+    reverse_proxy 127.0.0.1:3000
+
+    # v0.3 backend
+    reverse_proxy /api/v1/* 127.0.0.1:8000
+    reverse_proxy /ws/* 127.0.0.1:8000
+
+    # agent bridge (AG-UI GraphQL)
+    reverse_proxy /api/agent 127.0.0.1:8001
+
+    # metrics (admin only, 加 IP 白名单更稳)
+    reverse_proxy /metrics 127.0.0.1:8000
+
+    # 安全 header
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        # 删 X-Request-Id 让 Fastify 自填
+        -Server
+    }
+
+    # access log → logfmt (Caddy stdout)
+    log {
+        output file /var/log/caddy/dasheng.log {
+            roll_size 100mb
+            roll_keep 5
+        }
+    }
+}
+
+# metrics 端口独立 (不暴露公网, 走 :9090 仅内网访问)
+:9090 {
+    bind 127.0.0.1
+    reverse_proxy 127.0.0.1:8000
+}
+
+# 内部端口 (不暴露公网) - dev/staging 走 SSH tunnel 访问
+:8443 {
+    tls internal
+    reverse_proxy 127.0.0.1:3000
+}

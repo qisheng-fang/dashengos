@@ -456,6 +456,17 @@ def main() -> None:
     # 这里不再调 _setup_cors() (那是旧代码, 留兼容 stub)
     global _config
     _config = AgentConfig.from_env()
+
+    # Phase D.4 (2026-06-16) 启动检查: prod 必开 require_auth, 没开直接拒
+    if not _config.require_auth:
+        if _config.debug:
+            print('⚠️  Agent bridge DASHENG_REQUIRE_AUTH=false — 任何 :8001 可达者能调所有 brain')
+            print('   仅 dev 测用, prod 必 DASHENG_REQUIRE_AUTH=true (Stream 5 audit #4)')
+        else:
+            print('🚨 FATAL: DASHENG_REQUIRE_AUTH=false 但 debug=false (非 dev), prod 必开 auth. 启动中止.')
+            import sys
+            sys.exit(1)
+
     uvicorn.run(
         "agent.main:app",
         host=_config.host,

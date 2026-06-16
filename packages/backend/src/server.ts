@@ -51,6 +51,15 @@ export async function buildServer(): Promise<FastifyInstance> {
             }
           : undefined,
     },
+    // Phase D.8 (2026-06-16) X-Request-Id 贯穿 — 读 X-Request-Id 头或 nanoid 生成
+    // pino-pretty log 自动带 req.id, onSend hook 回写 header 给客户端
+    genReqId: (req) => {
+      const fromHeader = req.headers['x-request-id']
+      if (typeof fromHeader === 'string' && fromHeader.length > 0 && fromHeader.length <= 128) {
+        return fromHeader
+      }
+      return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+    },
     bodyLimit: 1024 * 1024,
   })
 
@@ -149,6 +158,14 @@ export async function buildServer(): Promise<FastifyInstance> {
       reply.elapsedTime,
     )
   })
+
+  // Phase D.8 (2026-06-16) X-Request-Id 回写 header (客户端 / 浏览器 devtools 可看)
+  app.addHook('onSend', async (req, reply, payload) => {
+    if (req.id) {
+      reply.header('X-Request-Id', req.id)
+    }
+    return payload
+  })
   // websocket plugin 已在 sessionWSS 里注册, 这里不重复
 
   await app.register(swagger, {
@@ -220,6 +237,19 @@ async function main() {
     }
     console.warn(
       '⚠️  Stripe webhook MOCK_MODE=false 但 WEBHOOK_SECRET 未配, webhook 永远 400.',
+    )
+  }
+
+  // Phase D.7 (2026-06-16) 启动校验: prod 必用强 JWT secret, 默认 dev-only 值拒起
+  if (config.DASHENG_JWT_SECRET.startsWith('dev-only-')) {
+    if (config.NODE_ENV === 'production') {
+      console.error(
+        '🚨 FATAL: DASHENG_JWT_SECRET 是 dev 默认值, prod 必填 ≥ 32 字符真随机. 启动中止.',
+      )
+      process.exit(1)
+    }
+    console.warn(
+      '⚠️  DASHENG_JWT_SECRET 是 dev 默认值, 仅 dev 测用, 上 prod 必换.',
     )
   }
 
