@@ -286,6 +286,19 @@ export function initSchema() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id, revoked);
+
+    -- 8. Phase A: per-user settings (model config persistence) · Track C.3
+    --   category 格式: 'provider.{id}' | 'models.text' | 'preferences.*'
+    --   value 是 JSON (例如 {apiKey, hasKey} 或 {chain: []})
+    CREATE TABLE IF NOT EXISTS user_settings (
+      user_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, category),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_settings_user ON user_settings(user_id);
   `)
 
   // Phase 7: 增量迁移 (旧 DB 加列, 新 DB 上面的 CREATE TABLE 已含)

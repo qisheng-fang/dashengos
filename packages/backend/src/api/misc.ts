@@ -450,21 +450,188 @@ export async function auditRoutes(app: FastifyInstance) {
 }
 
 // ====================================================================
-// settings.ts (3 端点)
+// settings.ts (3 端点 — Phase A 2026-06-16 真接 user_settings 表)
+//   - GET   /api/v1/settings                拿当前用户全部 settings
+//   - PUT   /api/v1/settings/provider/:id  存 provider API key
+//   - DELETE /api/v1/settings/provider/:id 删 key
+//   - PUT   /api/v1/settings/models/text   存降级链
+//   - POST  /api/v1/settings/provider/:id/test  真测连通
 // ====================================================================
+import { z } from 'zod'
+
+const ProviderIdSchema = z.enum(['deepseek', 'siliconflow', 'openai', 'anthropic', 'ollama'])
+const PutProviderBodySchema = z.object({ apiKey: z.string().min(1).max(512) })
+const PutTextModelsBodySchema = z.object({ chain: z.array(z.string().min(1)).min(1).max(20) })
+
+// 各 provider 真实连通测试 (打公共 API, ~5s timeout)
+async function testProviderConnection(
+  providerId: string,
+  apiKey: string | null,
+): Promise<{ healthy: boolean; latency_ms: number; error?: string }> {
+  const start = Date.now()
+  const timeout = 5_000
+  try {
+    let url: string
+    let headers: Record<string, string> = {}
+    switch (providerId) {
+      case 'siliconflow':
+        url = 'https://api.siliconflow.cn/v1/models'
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+        break
+      case 'deepseek':
+        url = 'https://api.deepseek.com/v1/models'
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+        break
+      case 'openai':
+        url = 'https://api.openai.com/v1/models'
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+        break
+      case 'anthropic':
+        url = 'https://api.anthropic.com/v1/messages'
+        headers = {
+          'x-api-key': apiKey ?? '',
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        }
+        break
+      case 'ollama':
+        url = 'http://127.0.0.1:11434/api/tags'
+        break
+      default:
+        return { healthy: false, latency_ms: 0, error: 'unknown provider' }
+    }
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), timeout)
+    const init: RequestInit = {
+      method: providerId === 'anthropic' ? 'POST' : 'GET',
+      headers,
+      signal: ctl.signal,
+    }
+    if (providerId === 'anthropic') {
+      init.body = JSON.stringify({
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+    }
+    const res = await fetch(url, init)
+    clearTimeout(timer)
+    return { healthy: res.ok, latency_ms: Date.now() - start }
+  } catch (e) {
+    return { healthy: false, latency_ms: Date.now() - start, error: (e as Error).message }
+  }
+}
+
 export async function settingsRoutes(app: FastifyInstance) {
-  app.get('/', { preHandler: [app.authenticate] }, async (_req, reply) => {
-    return reply.send({
-      language: 'zh-CN',
-      theme: 'dark',
-      defaultModel: 'ollama:qwen2.5:7b',
-    })
+  // GET /api/v1/settings — 拿当前用户 settings (provider keys hasKey 标记 + text chain)
+  app.get('/', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const userId = req.user!.id
+    const rows = sqlite
+      .prepare('SELECT category, value FROM user_settings WHERE user_id = ?')
+      .all(userId) as Array<{ category: string; value: string }>
+
+    const settings: Record<string, unknown> = { providers: {}, text: {} }
+    for (const row of rows) {
+      try {
+        const v = JSON.parse(row.value)
+        if (row.category.startsWith('provider.')) {
+          ;(settings.providers as Record<string, unknown>)[row.category.slice('provider.'.length)] = v
+        } else if (row.category.startsWith('models.text')) {
+          Object.assign(settings.text as object, v)
+        }
+      } catch {
+        // skip malformed
+      }
+    }
+    return reply.send(settings)
   })
-  app.put('/:key', { preHandler: [app.requireAdmin] }, async (_req, reply) => {
-    return reply.send({ ok: true })
+
+  // PUT /api/v1/settings/provider/:id — 存 API key (text, 不加密 — Phase D 加 SQLCipher)
+  app.put('/provider/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const idParse = ProviderIdSchema.safeParse(req.params.id)
+    if (!idParse.success) {
+      return reply.code(400).send({ code: 'VALIDATION_FAILED', message: 'unknown provider' })
+    }
+    const bodyParse = PutProviderBodySchema.safeParse(req.body)
+    if (!bodyParse.success) {
+      return reply.code(400).send({ code: 'VALIDATION_FAILED', details: bodyParse.error.issues })
+    }
+    const providerId = idParse.data
+    const apiKey = bodyParse.data.apiKey
+    const userId = req.user!.id
+    const now = Date.now()
+    const envKey = `${providerId.toUpperCase()}_API_KEY`
+    const value = JSON.stringify({ hasKey: true, envKey, apiKey, updated_at: now })
+    sqlite
+      .prepare(
+        `INSERT INTO user_settings (user_id, category, value, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id, category) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      )
+      .run(userId, `provider.${providerId}`, value, now)
+    return reply.send({ ok: true, hasKey: true, provider: providerId })
   })
-  app.post('/test', { preHandler: [app.requireAdmin] }, async (_req, reply) => {
-    return reply.send({ ok: true, latency_ms: 234 })
+
+  // DELETE /api/v1/settings/provider/:id — 清 key
+  app.delete('/provider/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const idParse = ProviderIdSchema.safeParse(req.params.id)
+    if (!idParse.success) {
+      return reply.code(400).send({ code: 'VALIDATION_FAILED', message: 'unknown provider' })
+    }
+    const userId = req.user!.id
+    sqlite
+      .prepare('DELETE FROM user_settings WHERE user_id = ? AND category = ?')
+      .run(userId, `provider.${idParse.data}`)
+    return reply.send({ ok: true, hasKey: false, provider: idParse.data })
+  })
+
+  // PUT /api/v1/settings/models/text — 存降级链
+  app.put('/models/text', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const bodyParse = PutTextModelsBodySchema.safeParse(req.body)
+    if (!bodyParse.success) {
+      return reply.code(400).send({ code: 'VALIDATION_FAILED', details: bodyParse.error.issues })
+    }
+    const userId = req.user!.id
+    const now = Date.now()
+    const value = JSON.stringify({ chain: bodyParse.data.chain, updated_at: now })
+    sqlite
+      .prepare(
+        `INSERT INTO user_settings (user_id, category, value, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id, category) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      )
+      .run(userId, 'models.text', value, now)
+    return reply.send({ ok: true, chain: bodyParse.data.chain })
+  })
+
+  // POST /api/v1/settings/provider/:id/test — 真测连通 (用 user key 或 fallback env)
+  app.post('/provider/:id/test', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const idParse = ProviderIdSchema.safeParse(req.params.id)
+    if (!idParse.success) {
+      return reply.code(400).send({ code: 'VALIDATION_FAILED', message: 'unknown provider' })
+    }
+    const userId = req.user!.id
+    const providerId = idParse.data
+    // 优先 user key, 后备 env
+    const row = sqlite
+      .prepare('SELECT value FROM user_settings WHERE user_id = ? AND category = ?')
+      .get(userId, `provider.${providerId}`) as { value: string } | undefined
+    let apiKey: string | null = null
+    if (row) {
+      try {
+        const parsed = JSON.parse(row.value)
+        apiKey = parsed.apiKey ?? null
+      } catch {
+        // ignore
+      }
+    }
+    if (!apiKey && providerId !== 'ollama') {
+      const envKey = `${providerId.toUpperCase()}_API_KEY`
+      apiKey = process.env[envKey] ?? null
+    }
+    if (!apiKey && providerId !== 'ollama') {
+      return reply.send({ ok: true, healthy: false, latency_ms: 0, error: 'no api key configured' })
+    }
+    const result = await testProviderConnection(providerId, apiKey)
+    return reply.send({ ok: true, ...result })
   })
 }
 
