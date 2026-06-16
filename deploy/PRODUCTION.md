@@ -253,6 +253,24 @@ docker start dasheng-backend
 
 ---
 
+## 5.5 旧 worker 清理 (Stream 4 audit 后续)
+
+老板旧项目 "创造 AI工作台" 删了, 但 6 个旧 worker 还跑着 (9108-9113), cwd 指向已删目录, 彻底孤儿.
+
+`deploy/kill-legacy-workers.sh` 自动识别 + kill:
+- ✅ Python 3.9 + CommandLineTools + uvicorn server:app → 旧 worker
+- ❌ ai-workbench-v2 进程 (走 .venv/bin/python 3.11) → 不动
+
+跑法:
+```bash
+./deploy/kill-legacy-workers.sh         # 干跑, 只列 6 个
+./deploy/kill-legacy-workers.sh --yes   # 真 kill (SIGTERM 5s → SIGKILL)
+```
+
+清理完 6 端口 (9108-9113) 全释放. 没有任何 supervisor 自动拉起, 30s 后再 verify 还是空.
+
+---
+
 ## 6. 安全 checklist (上 prod 前)
 
 - [ ] 🚨 `DASHENG_JWT_SECRET` ≥ 32 字符真随机 (非 dev-only-)
