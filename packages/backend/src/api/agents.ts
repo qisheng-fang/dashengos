@@ -87,10 +87,36 @@ export async function agentRoutes(app: FastifyInstance) {
   })
 
   // GET /agents/:id
+  // Phase C.4 (2026-06-16) 显式字段 + config_yaml redaction (非 admin/owner 返 '[REDACTED]')
+  // 之前 SELECT * 把 config_yaml (可能含 API key 模板 / 内部 prompt) 暴露给任何登录用户
   app.get('/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
     const { id } = req.params as { id: string }
-    const row = sqlite.prepare('SELECT * FROM agents WHERE id = ?').get(id)
+    const row = sqlite
+      .prepare(
+        'SELECT id, name, description, config_yaml, version, is_builtin, created_by, created_at, updated_at FROM agents WHERE id = ?',
+      )
+      .get(id) as
+      | {
+          id: string
+          name: string
+          description: string
+          config_yaml: string
+          version: number
+          is_builtin: number
+          created_by: string
+          created_at: number
+          updated_at: number
+        }
+      | undefined
     if (!row) return reply.code(404).send({ code: 'AGENT_NOT_FOUND' })
+    // config_yaml 仅 admin 或 owner 可见, 其他返 '[REDACTED]'
+    const userId = req.user!.id
+    const role = req.user!.role
+    const isOwner = row.created_by === userId
+    const isAdmin = role === 'ADMIN'
+    if (!isAdmin && !isOwner) {
+      return reply.send({ ...row, config_yaml: '[REDACTED]' })
+    }
     return reply.send(row)
   })
 
