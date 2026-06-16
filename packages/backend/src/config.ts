@@ -27,6 +27,19 @@ const ConfigSchema = z.object({
   OLLAMA_HOST: z.string().default('http://127.0.0.1:11434'),
   DEFAULT_MODEL: z.string().default('ollama:qwen2.5:7b'),
 
+  // Track D.1 (2026-06-15) · SiliconFlow provider (老板用 key 接 Qwen2.5-72B)
+  //   OpenAI 兼容 API (/v1/chat/completions)
+  //   老板给 key → 改 .env SILICONFLOW_API_KEY → 重启 backend → 真 LLM 通
+  SILICONFLOW_API_KEY: z.string().default(''),
+  SILICONFLOW_BASE_URL: z.string().url().default('https://api.siliconflow.cn/v1'),
+  SILICONFLOW_DEFAULT_MODEL: z.string().default('Qwen/Qwen2.5-72B-Instruct'),
+  SILICONFLOW_TIMEOUT_SEC: z.coerce.number().default(60),
+
+  // Track D.1 (2026-06-15) · DeepSeek provider (备选, 跟 SiliconFlow 二选一)
+  DEEPSEEK_API_KEY: z.string().default(''),
+  DEEPSEEK_BASE_URL: z.string().url().default('https://api.deepseek.com/v1'),
+  DEEPSEEK_MODEL: z.string().default('deepseek-chat'),
+
   // DeerFlow
   DEERFLOW_ENABLED: z.coerce.boolean().default(false),
   DEERFLOW_SOCKET_PATH: z.string().default('/tmp/dasheng/deerflow.sock'),
