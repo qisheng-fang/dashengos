@@ -73,7 +73,7 @@ class AgentConfig:
             api_key=api_key,
             base_url=os.environ.get("DASHENG_LLM_BASE_URL") or None,  # 默认 None → hermes 用自己的
             provider=os.environ.get("DASHENG_LLM_PROVIDER") or None,
-            cors_origins=[o.strip() for o in os.environ.get("DASHENG_CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()],
+            cors_origins=[o.strip() for o in os.environ.get("DASHENG_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()],
             require_auth=os.environ.get("DASHENG_REQUIRE_AUTH", "false").lower() == "true",
             auth_token=os.environ.get("DASHENG_AUTH_TOKEN", ""),
             rate_limit_per_minute=int(os.environ.get("DASHENG_RATE_LIMIT", "0")),

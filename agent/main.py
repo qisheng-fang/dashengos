@@ -83,8 +83,12 @@ app = FastAPI(
 #    之前 _setup_cors() 在 main() 才跑, 但 main() 调 uvicorn.run() 之前还有 lifespan 初始化,
 #    OPTIONS 预检请求到达时 CORS middleware 还没生效 → 浏览器 405 拒绝
 def _build_cors_origins() -> list[str]:
-    """从环境变量读 CORS 白名单, 立刻可用 (不等 lifespan)"""
-    return [o.strip() for o in os.environ.get("DASHENG_CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+    """从环境变量读 CORS 白名单, 立刻可用 (不等 lifespan)
+
+    默认同时支持 localhost 和 127.0.0.1 (浏览器眼里两个不同 origin)
+    """
+    default = "http://localhost:3000,http://127.0.0.1:3000"
+    return [o.strip() for o in os.environ.get("DASHENG_CORS_ORIGINS", default).split(",") if o.strip()]
 
 
 # ⚠️ module import 时立即注册 — 这条对浏览器 AG-UI 协议 OPTIONS 预检至关重要
