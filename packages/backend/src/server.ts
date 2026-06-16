@@ -228,15 +228,12 @@ async function main() {
       '⚠️  Stripe webhook MOCK_MODE=true — 跳过签名验证. 仅 dev 测用, 上 prod 必关.',
     )
   } else if (!config.DASHENG_STRIPE_WEBHOOK_SECRET) {
-    if (config.NODE_ENV === 'production') {
-      console.error(
-        '🚨 FATAL: DASHENG_STRIPE_MOCK_MODE=false 但 DASHENG_STRIPE_WEBHOOK_SECRET 为空, ' +
-          'prod 必填 webhook secret. 启动中止.',
-      )
-      process.exit(1)
-    }
+    // Phase 10 (2026-06-17) 改: 不再 fatal, 降为 warning
+    //   原先 process.exit(1) 不允许 MVP 跳过 Stripe, 跟 '先 ship 后接 payment' 实践冲突
+    //   真没 secret 时 webhook 永远 400 SIGNATURE_INVALID, 不影响其他端点
     console.warn(
-      '⚠️  Stripe webhook MOCK_MODE=false 但 WEBHOOK_SECRET 未配, webhook 永远 400.',
+      '⚠️  Stripe webhook MOCK_MODE=false 但 WEBHOOK_SECRET 未配, webhook 永远 400. ' +
+        'MVP 阶段可忽略, 真收钱时去 Stripe dashboard 拿 whsec_... 填 .env',
     )
   }
 
