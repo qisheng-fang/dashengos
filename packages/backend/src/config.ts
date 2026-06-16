@@ -63,12 +63,14 @@ const ConfigSchema = z.object({
   // Phase 7.5: Stripe webhook
   //   MOCK_MODE=true → 跳过签名验证 (dev 模式, 老板能 curl 直接发事件测)
   //   MOCK_MODE=false → 必须配 WEBHOOK_SECRET, 验签失败 400
+  //   ⚠️ Track B.1 (2026-06-16) 安全修复: 默认改 'false', 强制真验签
+  //   dev 测 webhook 时显式 DASHENG_STRIPE_MOCK_MODE=true 打开, 但 server.ts 启动时校验
   DASHENG_STRIPE_WEBHOOK_SECRET: z.string().default(''),
   // ⚠️ 不要用 z.coerce.boolean() — JS 的 Boolean('false') === true
   // 用 enum + transform 显式映射
   DASHENG_STRIPE_MOCK_MODE: z
     .enum(['true', 'false', '1', '0', 'yes', 'no'])
-    .default('true')
+    .default('false')  // ← Track B.1: 默认关, dev 显式开
     .transform((v) => v === 'true' || v === '1' || v === 'yes'),
   DASHENG_STRIPE_PRICE_PRO: z.string().default('price_pro_dev'),
   DASHENG_STRIPE_PRICE_ENTERPRISE: z.string().default('price_enterprise_dev'),

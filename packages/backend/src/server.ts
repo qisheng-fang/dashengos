@@ -1,5 +1,8 @@
 // packages/backend/src/server.ts · v0.3 spec §10-§19 (Fastify 5 + Drizzle + Redis)
 // Phase 2 入口: 127.0.0.1:8000 + 47 端点 + 8 核心模块
+// Track D.1 (2026-06-15) · 装 dotenv 让 backend 读 packages/backend/.env (含 SILICONFLOW_API_KEY 等)
+//   ⚠️ 之前 v0.3 backend 不读 .env, 这是历史遗留 bug. 现在第一行 import 'dotenv/config'
+import 'dotenv/config'
 
 import Fastify, { type FastifyInstance } from 'fastify'
 import cors from '@fastify/cors'
@@ -195,6 +198,31 @@ export async function buildServer(): Promise<FastifyInstance> {
 }
 
 async function main() {
+  // Phase B.1 (2026-06-16) 启动校验: prod 绝不能跑 mock Stripe, 没 secret 也不让起
+  if (config.DASHENG_STRIPE_MOCK_MODE) {
+    if (config.NODE_ENV === 'production') {
+      console.error(
+        '🚨 FATAL: DASHENG_STRIPE_MOCK_MODE=true 但 NODE_ENV=production, ' +
+          '任何人可伪造 webhook 事件改自己 tier. 启动中止.',
+      )
+      process.exit(1)
+    }
+    console.warn(
+      '⚠️  Stripe webhook MOCK_MODE=true — 跳过签名验证. 仅 dev 测用, 上 prod 必关.',
+    )
+  } else if (!config.DASHENG_STRIPE_WEBHOOK_SECRET) {
+    if (config.NODE_ENV === 'production') {
+      console.error(
+        '🚨 FATAL: DASHENG_STRIPE_MOCK_MODE=false 但 DASHENG_STRIPE_WEBHOOK_SECRET 为空, ' +
+          'prod 必填 webhook secret. 启动中止.',
+      )
+      process.exit(1)
+    }
+    console.warn(
+      '⚠️  Stripe webhook MOCK_MODE=false 但 WEBHOOK_SECRET 未配, webhook 永远 400.',
+    )
+  }
+
   const app = await buildServer()
   try {
     await app.listen({ host: config.BACKEND_HOST, port: config.BACKEND_PORT })

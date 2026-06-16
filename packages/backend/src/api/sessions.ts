@@ -54,9 +54,13 @@ export async function sessionRoutes(app: FastifyInstance) {
   })
 
   // GET /sessions/:id
+  // Phase B.2 (2026-06-16) 加 user_id 过滤防越权, 错返 404 避免 ID 枚举探测
   app.get('/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
     const { id } = req.params as { id: string }
-    const row = sqlite.prepare('SELECT * FROM sessions WHERE id = ?').get(id)
+    const userId = req.user!.id
+    const row = sqlite
+      .prepare('SELECT * FROM sessions WHERE id = ? AND user_id = ?')
+      .get(id, userId)
     if (!row) return reply.code(404).send({ code: 'SESSION_NOT_FOUND' })
     return reply.send(row)
   })
@@ -313,9 +317,16 @@ export async function sessionRoutes(app: FastifyInstance) {
   })
 
   // POST /sessions/:id/abort
+  // Phase B.2 (2026-06-16) 加 user_id 限定, 错返 404
   app.post('/:id/abort', { preHandler: [app.authenticate] }, async (req, reply) => {
     const { id } = req.params as { id: string }
-    sqlite.prepare("UPDATE sessions SET status = 'ABORTED', updated_at = ? WHERE id = ?").run(Date.now(), id)
+    const userId = req.user!.id
+    const res = sqlite
+      .prepare("UPDATE sessions SET status = 'ABORTED', updated_at = ? WHERE id = ? AND user_id = ?")
+      .run(Date.now(), id, userId)
+    if (res.changes === 0) {
+      return reply.code(404).send({ code: 'SESSION_NOT_FOUND' })
+    }
     return reply.send({ id, status: 'ABORTED' })
   })
 }
