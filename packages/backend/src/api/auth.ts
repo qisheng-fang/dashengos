@@ -21,6 +21,41 @@ const RefreshSchema = z.object({
 // Phase 7: admin 强制踢出某用户
 const ForceLogoutSchema = z.object({ user_id: z.string() })
 
+// Phase C.1 (2026-06-16) login lockout constants
+const LOGIN_MAX_ATTEMPTS = 5
+const LOGIN_WINDOW_MS = 15 * 60 * 1000
+
+// 查 IP 在 15min 内的失败次数, 决定是否锁定
+function isIpLocked(ip: string, now: number): { locked: boolean; retryAfterSec: number; failedCount: number } {
+  const windowStart = now - LOGIN_WINDOW_MS
+  const rows = sqlite
+    .prepare(
+      `SELECT attempt_at FROM login_attempts
+       WHERE ip = ? AND success = 0 AND attempt_at > ?
+       ORDER BY attempt_at ASC`,
+    )
+    .all(ip, windowStart) as Array<{ attempt_at: number }>
+  if (rows.length < LOGIN_MAX_ATTEMPTS) {
+    return { locked: false, retryAfterSec: 0, failedCount: rows.length }
+  }
+  // 锁定: 最早一次失败 + 15min 是解锁时刻
+  const oldest = rows[0].attempt_at
+  const unlockAt = oldest + LOGIN_WINDOW_MS
+  const retryAfterSec = Math.max(0, Math.ceil((unlockAt - now) / 1000))
+  return { locked: true, retryAfterSec, failedCount: rows.length }
+}
+
+function recordLoginAttempt(ip: string, now: number, success: boolean) {
+  if (success) {
+    // 登录成功 → 清空该 IP 全部记录
+    sqlite.prepare('DELETE FROM login_attempts WHERE ip = ?').run(ip)
+    return
+  }
+  sqlite
+    .prepare('INSERT INTO login_attempts (id, ip, attempt_at, success) VALUES (?, ?, ?, 0)')
+    .run(`la_${now}_${Math.random().toString(36).slice(2, 8)}`, ip, now)
+}
+
 export async function authRoutes(app: FastifyInstance) {
   // POST /auth/login
   app.post('/login', async (req, reply) => {
@@ -30,14 +65,35 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { username, password } = parsed.data
 
+    // Phase C.1: 先看 IP 是否锁定 (5 fail/15min 触发)
+    const now = Date.now()
+    const ip = req.ip || 'unknown'
+    const lock = isIpLocked(ip, now)
+    if (lock.locked) {
+      metrics.authLogin.inc({ result: 'locked' })
+      return reply
+        .code(429)
+        .header('Retry-After', String(lock.retryAfterSec))
+        .send({
+          code: 'TOO_MANY_LOGIN_ATTEMPTS',
+          message: `账户临时锁定, ${lock.retryAfterSec}s 后重试`,
+          retry_after_sec: lock.retryAfterSec,
+        })
+    }
+
     const user = sqlite
       .prepare('SELECT id, username, password_hash, role FROM users WHERE username = ?')
       .get(username) as { id: string; username: string; password_hash: string; role: 'ADMIN' | 'USER' | 'GUEST' } | undefined
 
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       metrics.authLogin.inc({ result: 'fail' })
+      recordLoginAttempt(ip, now, false)
       return reply.code(401).send({ code: 'UNAUTHORIZED', message: 'invalid credentials' })
     }
+
+    // 成功 → 清锁定记录
+    recordLoginAttempt(ip, now, true)
+    metrics.authLogin.inc({ result: 'success' })
 
     const tokens = issueTokens(user.id, user.role, [], {
       jwtSecret: config.DASHENG_JWT_SECRET,
@@ -53,7 +109,6 @@ export async function authRoutes(app: FastifyInstance) {
           .run(rec.id, rec.user_id, rec.token_hash, rec.created_at, rec.expires_at)
       },
     })
-    metrics.authLogin.inc({ result: 'success' })
 
     return reply.send({
       ...tokens,

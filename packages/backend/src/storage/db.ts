@@ -299,6 +299,17 @@ export function initSchema() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_user_settings_user ON user_settings(user_id);
+
+    -- 9. Phase C.1: login attempt tracking (for IP-based lockout)
+    --   5 fail in 15min from same IP → lock 15min
+    --   success → DELETE 同一 IP 的所有 attempt (重置)
+    CREATE TABLE IF NOT EXISTS login_attempts (
+      id TEXT PRIMARY KEY,
+      ip TEXT NOT NULL,
+      attempt_at INTEGER NOT NULL,
+      success INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, attempt_at);
   `)
 
   // Phase 7: 增量迁移 (旧 DB 加列, 新 DB 上面的 CREATE TABLE 已含)
