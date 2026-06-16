@@ -29,6 +29,12 @@ test.describe('Phase A: model config 真持久化 (POST → GET roundtrip)', () 
   })
 
   test.beforeEach(async () => {
+    // 清 lockout 避免 Phase B.1 测试污染 (5 fail 锁 15min)
+    const { execSync } = await import('node:child_process')
+    execSync(
+      `sqlite3 /Users/apple/Desktop/ai-workbench-v2/packages/backend/data/dasheng.db "DELETE FROM login_attempts;"`,
+      { stdio: 'pipe' },
+    )
     token = await login(req)
   })
 

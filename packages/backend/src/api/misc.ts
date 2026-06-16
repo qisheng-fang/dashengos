@@ -43,6 +43,9 @@ const SANDBOX_TOOLS = [
 const SandboxInvokeBody = z.object({
   params: z.record(z.string(), z.unknown()).default({}),
   timeout_ms: z.number().min(100).max(120_000).default(30_000),
+  // Phase E (2026-06-17) HITL: 第一次 invoke 不带 confirm → 返 202 + CONFIRM_REQUIRED
+  //   前端弹 confirm 框, 用户 OK 后带 confirm=true 再调
+  confirm: z.boolean().optional(),
 })
 
 // JSON-RPC 2.0 client over unix socket
@@ -169,13 +172,25 @@ export async function toolRoutes(app: FastifyInstance) {
         reason: perm.reason,
       })
     }
-    if (perm.require_confirm) {
-      // Phase B.5: HITL 还没接, 先 log, Phase C 加显式确认流
-      app.log.info({ userId, toolId, reason: perm.reason }, 'tool invoke requires confirm (Phase C HITL)')
+    if (perm.allow) {
+      // permission 已验过, 进 parsed 阶段
     }
     const parsed = SandboxInvokeBody.safeParse(req.body || {})
     if (!parsed.success) {
       return reply.code(400).send({ code: 'VALIDATION_FAILED', details: parsed.error.issues })
+    }
+    // Phase E (2026-06-17) HITL: 高危工具返 202, 前端弹 confirm 框
+    if (perm.require_confirm && !parsed.data.confirm) {
+      app.log.info({ userId, toolId, reason: perm.reason }, 'tool invoke requires confirm (HITL 202)')
+      return reply.code(202).send({
+        code: 'CONFIRM_REQUIRED',
+        tool_id: toolId,
+        reason: perm.reason,
+        require_confirm: true,
+      })
+    }
+    if (perm.require_confirm && parsed.data.confirm) {
+      app.log.info({ userId, toolId, reason: perm.reason }, 'tool invoke confirmed by user')
     }
     const start = Date.now()
     try {
