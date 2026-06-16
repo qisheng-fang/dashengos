@@ -5,6 +5,11 @@ import { ulid } from 'ulid'
 import { sqlite } from '../storage/db.js'
 import { config } from '../config.js'
 
+// Phase C.2 (2026-06-16) 上游错误 sanitize — 不让 LLM 4xx body (可能含 Authorization / trace_id) 回客户端
+function sanitizeUpstreamError(): string {
+  return 'upstream LLM failed, see server log for details'
+}
+
 const CreateSessionSchema = z.object({
   title: z.string().min(1).max(255).optional(),
   agent_id: z.string().min(1),
@@ -111,7 +116,7 @@ export async function sessionRoutes(app: FastifyInstance) {
           })
           if (!res.ok) {
             const errText = await res.text().catch(() => '')
-            return reply.code(502).send({ code: 'OLLAMA_UPSTREAM_FAILED', status: res.status, message: errText.slice(0, 500) })
+            return reply.code(502).send({ code: 'OLLAMA_UPSTREAM_FAILED', status: res.status, message: sanitizeUpstreamError() })
           }
           const json = (await res.json()) as {
             message: { role: string; content: string }
@@ -181,7 +186,7 @@ export async function sessionRoutes(app: FastifyInstance) {
             return reply.code(502).send({
               code: 'SILICONFLOW_UPSTREAM_FAILED',
               status: res.status,
-              message: errText.slice(0, 500),
+              message: sanitizeUpstreamError(),
             })
           }
           const json = (await res.json()) as {
@@ -259,7 +264,7 @@ export async function sessionRoutes(app: FastifyInstance) {
             return reply.code(502).send({
               code: 'DEEPSEEK_UPSTREAM_FAILED',
               status: res.status,
-              message: errText.slice(0, 500),
+              message: sanitizeUpstreamError(),
             })
           }
           const json = (await res.json()) as {

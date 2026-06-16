@@ -5,7 +5,9 @@
 import type { FastifyInstance } from 'fastify'
 import { connect as netConnect } from 'node:net'
 import { Buffer } from 'node:buffer'
+import { z } from 'zod'
 import { sqlite } from '../storage/db.js'
+import { config } from '../config.js'
 
 // Phase 10: /tools 返 23 sandbox IPC + /tools/:id/invoke 真接 sandbox via unix socket
 // Sandbox IPC 走 JSON-RPC 2.0 over unix socket (/tmp/dasheng/sandbox.sock)
@@ -225,8 +227,6 @@ export async function toolRoutes(app: FastifyInstance) {
 // ====================================================================
 // models.ts (3 端点)
 // ====================================================================
-import { z } from 'zod'
-import { config } from '../config.js'
 
 const ChatBody = z.object({
   messages: z
@@ -284,7 +284,7 @@ export async function modelRoutes(app: FastifyInstance) {
         })
         if (!res.ok) {
           const errText = await res.text().catch(() => '')
-          return reply.code(502).send({ code: 'OLLAMA_UPSTREAM_FAILED', status: res.status, message: errText.slice(0, 500) })
+          return reply.code(502).send({ code: 'OLLAMA_UPSTREAM_FAILED', status: res.status, message: sanitizeUpstreamError() })
         }
         const json = (await res.json()) as {
           model: string; message: { role: string; content: string }; done: boolean
@@ -342,7 +342,7 @@ export async function modelRoutes(app: FastifyInstance) {
           return reply.code(502).send({
             code: 'SILICONFLOW_UPSTREAM_FAILED',
             status: res.status,
-            message: errText.slice(0, 500),
+            message: sanitizeUpstreamError(),
           })
         }
         const json = (await res.json()) as {
@@ -400,7 +400,7 @@ export async function modelRoutes(app: FastifyInstance) {
           return reply.code(502).send({
             code: 'DEEPSEEK_UPSTREAM_FAILED',
             status: res.status,
-            message: errText.slice(0, 500),
+            message: sanitizeUpstreamError(),
           })
         }
         const json = (await res.json()) as {
@@ -507,15 +507,17 @@ export async function auditRoutes(app: FastifyInstance) {
   })
 }
 
-// ====================================================================
-// settings.ts (3 端点 — Phase A 2026-06-16 真接 user_settings 表)
+// Phase C.2 (2026-06-16) 上游错误 sanitize — 不让 LLM 4xx body (可能含 Authorization / trace_id) 回客户端
+// server 侧用 app.log.error 记完整 errText, client 只返 status + generic hint
+function sanitizeUpstreamError(): string {
+  return 'upstream LLM failed, see server log for details'
+}
 //   - GET   /api/v1/settings                拿当前用户全部 settings
 //   - PUT   /api/v1/settings/provider/:id  存 provider API key
 //   - DELETE /api/v1/settings/provider/:id 删 key
 //   - PUT   /api/v1/settings/models/text   存降级链
 //   - POST  /api/v1/settings/provider/:id/test  真测连通
 // ====================================================================
-import { z } from 'zod'
 
 const ProviderIdSchema = z.enum(['deepseek', 'siliconflow', 'openai', 'anthropic', 'ollama'])
 const PutProviderBodySchema = z.object({ apiKey: z.string().min(1).max(512) })
