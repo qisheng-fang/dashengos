@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { memo } from 'react'
 import { STUDIO_NODES, type StudioNodeKind } from './nodes'
+import ComfyUINode from '@/comfyui/ComfyUINode'
 
 const ICONS: Record<StudioNodeKind, typeof Video> = {
   douyin: Video,
@@ -86,4 +87,4 @@ function StudioNodeImpl(props: NodeProps) {
 }
 
 export const StudioNode = memo(StudioNodeImpl)
-export const NODE_TYPES = { studio: StudioNode }
+export const NODE_TYPES = { studio: StudioNode, comfyui: ComfyUINode }

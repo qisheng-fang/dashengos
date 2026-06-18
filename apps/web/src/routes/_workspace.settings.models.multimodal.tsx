@@ -9,7 +9,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Image as ImageIcon, Video, Volume2, Mic, Music2, Loader2, CheckCircle2, XCircle, RefreshCw } from 'lucide-react'
+import { Image as ImageIcon, Video, Volume2, Mic, Music2, Loader2, CheckCircle2, RefreshCw } from 'lucide-react'
 import { useEffect, useState, useCallback } from 'react'
 import { http } from '@/lib/api'
 

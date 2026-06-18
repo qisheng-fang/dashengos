@@ -1,0 +1,162 @@
+# Kubernetes manifests · DaShengOS sandbox v0.3 Phase 4
+#
+# Deploy:
+#   kubectl apply -f deploy/k8s/namespace.yaml
+#   kubectl apply -f deploy/k8s/sandbox-config.yaml
+#   kubectl apply -f deploy/k8s/sandbox-deployment.yaml
+#   kubectl apply -f deploy/k8s/sandbox-service.yaml
+#
+# Note: The Go sandbox listens on a Unix socket, not a TCP port.
+# For cluster-wide metrics, run a sidecar (sandbox-exporter) that
+# calls metrics.snapshot over the shared emptyDir volume and exposes
+# /metrics on a regular container port. This is the standard pattern
+# for socket-only services (cf. consul, vault).
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dasheng
+  labels:
+    app.kubernetes.io/part-of: dasheng-os
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sandbox-config
+  namespace: dasheng
+data:
+  DASHE_SANDBOX_SOCKET: "/tmp/dasheng/sandbox.sock"
+  DASHE_BROWSER_MOCK: "1"
+  # Logging
+  GIN_MODE: "release"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox
+  namespace: dasheng
+  labels:
+    app: sandbox
+    app.kubernetes.io/component: sandbox
+    app.kubernetes.io/part-of: dasheng-os
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: sandbox
+  template:
+    metadata:
+      labels:
+        app: sandbox
+        app.kubernetes.io/component: sandbox
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sandbox
+          image: dasheng/sandbox:v0.3.0-phase4
+          imagePullPolicy: IfNotPresent
+          args: []
+          envFrom:
+            - configMapRef:
+                name: sandbox-config
+          # On Linux k8s, full namespace+seccomp+cgroup isolation is available
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            # Enable user namespace + no-new-privs in the container
+            # (extra hardening on top of the in-process isolation)
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: sockets
+              mountPath: /tmp/dasheng
+            - name: home
+              mountPath: /home/nonroot
+          livenessProbe:
+            exec:
+              command: ["test", "-S", "/tmp/dasheng/sandbox.sock"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["test", "-S", "/tmp/dasheng/sandbox.sock"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: sockets
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+---
+# Headless service for stable DNS names (so other pods can find peers).
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox
+  namespace: dasheng
+  labels:
+    app: sandbox
+spec:
+  clusterIP: None
+  selector:
+    app: sandbox
+  ports:
+    # The Go sandbox doesn't listen on TCP, but expose a placeholder for
+    # k8s Service discovery. A sidecar (sandbox-exporter) will publish 9100.
+    - name: metrics
+      port: 9100
+      targetPort: 9100
+---
+# ServiceMonitor for Prometheus Operator (if installed)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sandbox
+  namespace: dasheng
+  labels:
+    app: sandbox
+    release: prometheus  # match your Prometheus Operator selector
+spec:
+  selector:
+    matchLabels:
+      app: sandbox
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+---
+# PodDisruptionBudget — at least 1 pod must stay up during voluntary disruption
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sandbox
+  namespace: dasheng
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: sandbox

@@ -1,279 +1,248 @@
-// apps/web/src/screens/Workspace.tsx · v0.3 Phase 5+ (real backend)
-import { useEffect, useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
-import { useTranslation } from 'react-i18next'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+// apps/web/src/screens/Workspace.tsx · Smart Dispatcher Chat + Memory (2026-06-17)
+// 上下文记忆：localStorage 持久化消息 + 每次请求带完整对话历史
+
+import { useEffect, useRef, useState } from 'react'
+import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Code2, Search, Palette, BarChart3, Plus, Loader2, Send, Video, BookOpen, Newspaper } from 'lucide-react'
+import { Send, Bot, User, Loader2, Square, Search, FileText, BarChart3, Trash2 } from 'lucide-react'
 import { http } from '@/lib/api'
-import { useAuthStore } from '@/lib/auth-store'
-import { PlatformChipBar } from '@/components/platform/PlatformChipBar'  // Track C.1 (2026-06-15)
+import { cn } from '@/lib/utils'
 
-interface Session {
+interface UiMessage {
   id: string
-  title: string
-  agent_id: string
-  created_at: number
-  updated_at: number
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string
+  timestamp: number
+  subAgents?: string[]
 }
 
-// Phase 10: 扩 Agent interface 加 description + category (从 /api/v1/agents 真返)
-interface Agent {
-  id: string
-  name: string
-  description?: string
-  category?: string
-  session_count?: number
-  /** Track B.3 · 3 社媒 agent 标记 (从 backend BUILTIN_AGENTS is_social 字段) */
-  is_social?: boolean
+function newId(): string { return `m_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` }
+
+const MSGS_KEY = 'dasheng_workspace_msgs'
+const THREAD_KEY = 'dasheng_workspace_thread'
+
+const WELCOME: UiMessage = {
+  id: 'welcome', role: 'assistant', timestamp: Date.now(),
+  content: '你好！我是 DaShengOS 智能工作台 🧠\n\n直接告诉我你想做什么，我会自动调度所需工具：\n\n• 简单问答 → 直接回复\n• 查资料 → 自动搜索互联网\n• 写文章 → AI 智能写作\n• 复杂任务 → 自动编排执行',
 }
 
-const ICON_BY_AGENT: Record<string, { icon: typeof Code2; color: string }> = {
-  'code-reviewer': { icon: Code2, color: 'text-semantic-info' },
-  'deep-researcher': { icon: Search, color: 'text-semantic-success' },
-  'design-assistant': { icon: Palette, color: 'text-semantic-warning' },
-  'data-analyst': { icon: BarChart3, color: 'text-brand' },
-  // 新增 2 个默认 icon
-  'security-reviewer': { icon: Code2, color: 'text-semantic-danger' },
-  'custom-workflow': { icon: Code2, color: 'text-neutral-400' },
-  // Track B.3 · 3 社媒 Agent
-  'DouyinAgent': { icon: Video, color: 'text-pink-400' },
-  'XiaohongshuAgent': { icon: BookOpen, color: 'text-rose-400' },
-  'WechatAgent': { icon: Newspaper, color: 'text-emerald-400' },
+function loadMsgs(): UiMessage[] {
+  try { const r = localStorage.getItem(MSGS_KEY); return r ? JSON.parse(r) : [] } catch { return [] }
 }
-
-function timeAgo(ts: number): string {
-  const d = Date.now() - ts
-  if (d < 60_000) return '刚刚'
-  if (d < 3_600_000) return `${Math.floor(d / 60_000)} 分钟前`
-  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)} 小时前`
-  return `${Math.floor(d / 86_400_000)} 天前`
-}
+function saveMsgs(msgs: UiMessage[]) { localStorage.setItem(MSGS_KEY, JSON.stringify(msgs)) }
 
 export function Workspace() {
-  const { t } = useTranslation()
-  const navigate = useNavigate()
-  const user = useAuthStore((s) => s.user)
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [agents, setAgents] = useState<Agent[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  // Phase 10: 顶部 input bar (老板在首页直接打字 → 创 session + 跳 Chat 屏)
-  const [askInput, setAskInput] = useState('')
+  const [messages, setMessages] = useState<UiMessage[]>(() => {
+    const saved = loadMsgs()
+    return saved.length > 0 ? saved : [WELCOME]
+  })
+  const [input, setInput] = useState('')
+  const [running, setRunning] = useState(false)
+  const [statusText, setStatusText] = useState('')
+  const chatRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const threadIdRef = useRef<string>(localStorage.getItem(THREAD_KEY) || `ws_${Date.now().toString(36)}`)
 
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      setError(null)
-      try {
-        const [sRes, aRes] = await Promise.all([
-          http.get<{ sessions: Session[] }>('/api/v1/sessions'),
-          http.get<{ agents: Agent[] }>('/api/v1/agents'),
-        ])
-        if (cancelled) return
-        setSessions(sRes.sessions)
-        setAgents(aRes.agents)
-      } catch {
-        // 后端不可达时静默 fallback, UI 显示空状态
-      } finally {
-        if (!cancelled) setLoading(false)
+  // 持久化
+  useEffect(() => { saveMsgs(messages); localStorage.setItem(THREAD_KEY, threadIdRef.current) }, [messages])
+  useEffect(() => { chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' }) }, [messages])
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  function clearHistory() {
+    localStorage.removeItem(MSGS_KEY)
+    saveMsgs([])
+    setMessages([WELCOME])
+  }
+
+  async function handleSend() {
+    const text = input.trim()
+    if (!text || running) return
+    setInput('')
+
+    const userMsg: UiMessage = { id: newId(), role: 'user', content: text, timestamp: Date.now() }
+    const assistantMsg: UiMessage = { id: newId(), role: 'assistant', content: '', timestamp: Date.now() }
+    const updated = [...messages, userMsg, assistantMsg]
+    setMessages(updated)
+    saveMsgs(updated)
+    setRunning(true)
+    setStatusText('分析中...')
+
+    try {
+      // 构建历史（最近10轮对话）
+      const history = messages
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .slice(-20)
+        .map(m => ({ role: m.role, content: m.content }))
+
+      // TimeoutController 5分钟 (大报告可能需要)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 5 * 60 * 1000)
+
+      setStatusText('正在调用 AI 引擎...')
+
+      const response = await http.post<{
+        threadId: string
+        status: string
+        report: string
+        sources?: string[]
+        artifacts?: Array<{ type: string; format?: string; fileName?: string; size?: number; downloadUrl?: string; error?: string }>
+      }>(
+        '/api/v1/chat',
+        { message: text, threadId: threadIdRef.current, history },
+        { signal: controller.signal },
+      )
+      clearTimeout(timer)
+
+      // 业务闭环：artifacts 中有文档时，在消息末尾加下载链接
+      let displayContent = response.report || '完成任务'
+      if (response.artifacts && response.artifacts.length > 0) {
+        const docArtifacts = response.artifacts.filter(a => a.type === 'document' && a.downloadUrl)
+        if (docArtifacts.length > 0) {
+          // ★ 用可点击 HTML 链接（不被 markdown 转义）
+          // 从 zustand persist 拿 token
+          let bearer = ''
+          try {
+            const authRaw = localStorage.getItem('dasheng-auth')
+            if (authRaw) {
+              const parsed = JSON.parse(authRaw)
+              bearer = parsed?.state?.accessToken || ''
+            }
+          } catch { /* ignore */ }
+          const links = docArtifacts.map(a => {
+            const sizeKB = a.size ? `${(a.size / 1024).toFixed(1)} KB` : ''
+            const handleClick = `onClick="event.preventDefault(); fetch('${a.downloadUrl}',{headers:{Authorization:'Bearer ${bearer}'}}).then(r=>r.blob()).then(b=>{const u=URL.createObjectURL(b);const l=document.createElement('a');l.href=u;l.download='${a.fileName}';l.click();URL.revokeObjectURL(u);})"`
+            return `<a href="${a.downloadUrl}" ${handleClick} class="text-brand underline cursor-pointer" target="_blank">📄 ${a.fileName} (${sizeKB})</a>`
+          }).join('<br/>')
+          // ★ 检测 HTML 报告：分离 Markdown 文本 + HTML 渲染
+          const htmlMatch = displayContent.match(/```html\s*([\s\S]*?)\s*```/)
+          if (htmlMatch) {
+            // ★ 提取 HTML 单独渲染（带设计感的报告）
+            const htmlContent = htmlMatch[1]
+            const beforeHtml = displayContent.substring(0, htmlMatch.index || 0).trim()
+            const afterHtml = displayContent.substring((htmlMatch.index || 0) + htmlMatch[0].length).trim()
+            const reportDescription = beforeHtml || '报告已生成'
+
+            // 把 HTML 注入到独立 iframe（避免 Tailwind class 污染）
+            const escapedHtml = htmlContent.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+            displayContent = `
+              <div class="text-sm text-neutral-300 mb-3">${reportDescription}</div>
+              <div class="my-3 rounded-xl overflow-hidden border border-neutral-700 bg-white shadow-2xl">
+                <div class="flex items-center justify-between bg-neutral-800 px-4 py-2 text-xs text-neutral-300 border-b border-neutral-700">
+                  <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-red-500"></span>
+                    <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
+                    <span class="w-2 h-2 rounded-full bg-green-500"></span>
+                    <span class="ml-2">📊 精雕娃娃行业报告 · HTML Preview</span>
+                  </div>
+                  <div class="flex gap-2">
+                    <button onclick="document.getElementById('html-fullscreen').requestFullscreen()" class="px-2 py-0.5 rounded hover:bg-neutral-700 transition">⛶ 全屏</button>
+                    <button onclick="document.getElementById('html-source').style.display = document.getElementById('html-source').style.display === 'none' ? 'block' : 'none'" class="px-2 py-0.5 rounded hover:bg-neutral-700 transition">{'</>'} 源码</button>
+                  </div>
+                </div>
+                <iframe id="html-fullscreen" src="data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}" style="width:100%;height:600px;border:0;background:white;" sandbox="allow-scripts allow-same-origin"></iframe>
+                <div id="html-source" style="display:none;max-height:400px;overflow:auto;background:#1a1a1a;color:#e5e5e5;padding:16px;font-family:monospace;font-size:11px;white-space:pre-wrap;border-top:1px solid #333;">${escapedHtml}</div>
+              </div>
+              <div class="mt-3 p-3 bg-gradient-to-r from-brand/10 to-brand/5 border border-brand/30 rounded-lg">
+                <div class="text-sm font-semibold text-brand mb-2 flex items-center gap-2">📎 可下载文件</div>
+                ${links}
+                <div class="text-[10px] text-neutral-500 mt-2">点击直接下载 · 支持 Word/Excel/PPT/PDF</div>
+              </div>
+              ${afterHtml ? `<div class="text-xs text-neutral-400 mt-2">${afterHtml}</div>` : ''}
+            `
+          } else {
+            // 普通 markdown 报告
+            displayContent = `${displayContent}\n\n---\n<div class="mt-3 p-3 bg-brand/5 border border-brand/20 rounded-lg"><div class="text-sm font-semibold text-brand mb-2">📎 可下载文件</div>${links}<div class="text-[10px] text-neutral-500 mt-2">点击直接下载，或在文档生成页面查看</div></div>`
+          }
+        }
       }
-    }
-    load()
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
-  // 客户端生成 thread id (后端无 /api/v1/sessions, :8001 agent bridge threadId 是字符串)
-  function newThreadId(): string {
-    return `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+      setMessages(prev => {
+        const next = prev.map(m =>
+          m.id === assistantMsg.id
+            ? {
+                ...m,
+                content: displayContent,
+                subAgents: response.sources,
+                timestamp: Date.now(),
+              }
+            : m
+        )
+        saveMsgs(next)
+        return next
+      })
+      setStatusText('')
+    } catch (e: any) {
+      setMessages(prev => {
+        const next = prev.map(m =>
+          m.id === assistantMsg.id
+            ? { ...m, content: `AI 引擎不可用：${e?.message ?? '未知'}\n\n请确认后端 :8000 正在运行。` }
+            : m
+        )
+        saveMsgs(next)
+        return next
+      })
+      setStatusText('')
+    } finally { setRunning(false) }
   }
 
-  function handleNewSession(_agentId: string) {
-    // 不再走后端创建, 直接跳到 Chat 屏, threadId 本地生成
-    void navigate({ to: '/chats/$id', params: { id: newThreadId() } })
-  }
-
-  // Phase 10: 顶部 input bar — 客户端生成 thread + 跳 Chat 屏, Chat 屏 auto-send
-  function handleAskSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    const text = askInput.trim()
-    if (!text) return
-    const threadId = newThreadId()
-    // 把 ask 文字存到 sessionStorage, Chat 屏读到自动发
-    sessionStorage.setItem(`pending_msg_${threadId}`, text)
-    setAskInput('')
-    void navigate({ to: '/chats/$id', params: { id: threadId } })
-  }
-
-  // Quick-start: show top 7 agents (前 6 builtin + 1 social DouyinAgent), default agent for new sessions
-  const quickStart = agents.slice(0, 7).map((a) => {
-    const meta = ICON_BY_AGENT[a.id] ?? { icon: Code2, color: 'text-semantic-info' }
-    return { ...a, ...meta }
-  })
-
-  // Track C.1 · 全部 Agent (8+ 含 3 社媒, 折叠区)
-  const [showAllAgents, setShowAllAgents] = useState(false)
-  const allAgentsDecorated = agents.map((a) => {
-    const meta = ICON_BY_AGENT[a.id] ?? { icon: Code2, color: 'text-semantic-info' }
-    return { ...a, ...meta, is_social: a.is_social ?? false } as Agent & typeof meta & { is_social: boolean }
-  })
+  function handleStop() { setRunning(false); setStatusText('') }
+  function handleKeyDown(e: React.KeyboardEvent) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }
 
   return (
-    <div className="p-8 max-w-6xl mx-auto">
-      <header className="mb-6">
-        <h1 className="text-3xl font-semibold tracking-tight text-neutral-100">
-          {t('workspace.welcome')}
-          {user && <span className="text-brand">, {user.username}</span>}
-        </h1>
-        <p className="mt-2 text-neutral-400">DaShengOS 私有 AI 工作台 · v0.3 · Track B 3 社媒 Agent 真接入 + 7 平台 chip</p>
-      </header>
-
-      {/* Track C.1 · 7 平台 chip 横滑 (顶部, 跟旧 DaShengOS 截图一致) */}
-      <div className="mb-6">
-        <PlatformChipBar />
-      </div>
-
-      {/* Phase 10: 顶部 "ask anything" input bar — 创 session + 跳 Chat 屏 */}
-      <form
-        onSubmit={handleAskSubmit}
-        className="mb-6 flex items-center gap-2"
-      >
-        <Input
-          value={askInput}
-          onChange={(e) => setAskInput(e.target.value)}
-          placeholder="问点什么... (回车发送, 自动跳 Chat 屏)"
-          className="flex-1 bg-neutral-900 border-neutral-800 text-base h-12"
-          aria-label="ask anything"
-        />
-        <Button
-          type="submit"
-          size="lg"
-          disabled={!askInput.trim()}
-          className="h-12"
-        >
-          <Send size={18} />
-        </Button>
-      </form>
-
-      {error && (
-        <div className="mb-4 p-3 rounded-md bg-semantic-danger/10 border border-semantic-danger/30 text-sm text-semantic-danger">
-          ⚠ {error}
+    <div className="h-full flex flex-col bg-neutral-950">
+      {statusText && (
+        <div className="flex items-center gap-2 px-4 py-1.5 bg-brand/10 border-b border-brand/20 text-xs text-brand">
+          <Loader2 size={12} className="animate-spin" /> {statusText}
         </div>
       )}
-
-      <Card className="bg-neutral-900/50 border-neutral-800 mb-6">
-        <CardHeader>
-          <CardTitle className="text-xl text-neutral-100">{t('workspace.quickStart')}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="flex items-center gap-2 text-neutral-400 text-sm">
-              <Loader2 size={16} className="animate-spin" /> 加载 Agent 列表...
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
-              {quickStart.map((a) => {
-                const Icon = a.icon
-                return (
-                  <button
-                    key={a.id}
-                    onClick={() => handleNewSession(a.id)}
-                    className="rounded-md border border-neutral-800 bg-neutral-900 p-4 text-left hover:bg-neutral-800 hover:border-neutral-700 transition-colors"
-                    aria-label={`用 ${a.name} 创建新会话`}
-                    data-testid={`quickstart-${a.id}`}
-                  >
-                    <Icon className={`mb-2 ${a.color}`} size={24} aria-hidden="true" />
-                    <div className="text-sm font-medium text-neutral-100">{a.name}</div>
-                    <div className="text-xs text-neutral-400 mt-1">+ 新会话</div>
-                  </button>
-                )
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Track C.1 · 全部 Agent 折叠区 (9 总: 6 builtin + 3 social) */}
-      {allAgentsDecorated.length > 7 && (
-        <Card className="bg-neutral-900/50 border-neutral-800 mb-6">
-          <CardHeader className="cursor-pointer select-none" onClick={() => setShowAllAgents(!showAllAgents)}>
-            <CardTitle className="text-lg text-neutral-100 flex items-center justify-between">
-              <span>全部 Agent ({allAgentsDecorated.length})</span>
-              <span className="text-xs text-neutral-400">{showAllAgents ? '收起 ▴' : '展开 ▾'}</span>
-            </CardTitle>
-          </CardHeader>
-          {showAllAgents && (
-            <CardContent>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
-                {allAgentsDecorated.map((a) => {
-                  const Icon = a.icon
-                  return (
-                    <button
-                      key={a.id}
-                      onClick={() => handleNewSession(a.id)}
-                      className="rounded border border-neutral-800 bg-neutral-900/50 p-2.5 text-left hover:bg-neutral-800 transition-colors"
-                      data-testid={`all-agent-${a.id}`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Icon className={a.color} size={14} aria-hidden="true" />
-                        <span className="text-xs font-medium text-neutral-200 truncate">{a.name}</span>
-                      </div>
-                      {a.is_social && (
-                        <div className="text-[10px] text-emerald-400 mt-0.5">真接入 (Track B)</div>
-                      )}
-                    </button>
-                  )
-                })}
+      <div ref={chatRef} className="flex-1 overflow-y-auto px-4 py-6">
+        <div className="max-w-3xl mx-auto space-y-6">
+          {messages.map((m) => (
+            <div key={m.id} className={cn('flex gap-3', m.role === 'user' ? 'flex-row-reverse' : '')}>
+              <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0',
+                m.role === 'user' ? 'bg-brand/20 text-brand' : m.role === 'system' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-neutral-700 text-neutral-300')}>
+                {m.role === 'user' ? <User size={14} /> : m.role === 'system' ? <Search size={14} /> : <Bot size={14} />}
               </div>
-            </CardContent>
-          )}
-        </Card>
-      )}
-
-      <Card className="bg-neutral-900/50 border-neutral-800 mb-6">
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-xl text-neutral-100">{t('workspace.recentSessions')}</CardTitle>
-          <Button
-            variant="outline"
-            size="sm"
-            leftIcon={<Plus size={16} />}
-            onClick={() => quickStart[0] && handleNewSession(quickStart[0].id)}
-            disabled={quickStart.length === 0}
-          >
-            {t('workspace.newSession')}
-          </Button>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="flex items-center gap-2 text-neutral-400 text-sm">
-              <Loader2 size={16} className="animate-spin" /> 加载会话...
-            </div>
-          ) : sessions.length === 0 ? (
-            <p className="text-sm text-neutral-400">还没有会话, 点击上面的 Agent 创建第一个</p>
-          ) : (
-            <ul className="space-y-2">
-              {sessions.map((s) => (
-                <li key={s.id}>
-                  <button
-                    onClick={() => navigate({ to: '/chats/$id', params: { id: s.id } })}
-                    className="w-full flex items-center justify-between rounded-md border border-neutral-800 bg-neutral-900 p-3 hover:bg-neutral-800 transition-colors text-left"
-                  >
-                    <div>
-                      <div className="text-sm font-medium text-neutral-100">{s.title || `会话 ${s.id.slice(-6)}`}</div>
-                      <div className="text-xs text-neutral-400 mt-1">{s.agent_id}</div>
+              <div className={cn('flex-1 max-w-[80%]', m.role === 'user' && 'flex justify-end')}>
+                <Card className={cn('p-3 text-sm leading-relaxed',
+                  m.role === 'user' ? 'bg-brand/10 border-brand/20 text-neutral-100' :
+                  m.role === 'system' ? 'bg-yellow-500/5 border-yellow-500/20 text-yellow-200 text-xs' :
+                  'bg-neutral-900/80 border-neutral-800 text-neutral-100')}>
+                  {m.content ? <div className="whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: m.content }} /> :
+                   <div className="flex items-center gap-2 text-neutral-500"><Loader2 size={14} className="animate-spin" />思考中...</div>}
+                  {m.subAgents && m.subAgents.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-neutral-800 flex flex-wrap gap-1">
+                      {m.subAgents.map(a => <span key={a} className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400">{a}</span>)}
                     </div>
-                    <div className="text-xs text-neutral-400">{timeAgo(s.updated_at)}</div>
-                  </button>
-                </li>
-              ))}
-            </ul>
+                  )}
+                </Card>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="border-t border-neutral-800 px-4 py-4 bg-neutral-950/80 backdrop-blur">
+        <div className="max-w-3xl mx-auto flex items-center gap-2">
+          <Input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown}
+            placeholder="输入任务，DaShengOS 自动执行..." className="flex-1 bg-neutral-900 border-neutral-700 text-base h-12 placeholder:text-neutral-500" disabled={running} />
+          {running ? (
+            <Button size="lg" variant="outline" onClick={handleStop} className="h-12"><Square size={16} /></Button>
+          ) : (
+            <Button size="lg" onClick={handleSend} disabled={!input.trim()} className="h-12 bg-brand hover:bg-brand/80"><Send size={18} /></Button>
           )}
-        </CardContent>
-      </Card>
+        </div>
+        <div className="max-w-3xl mx-auto mt-2 flex gap-3 justify-between">
+          <div className="flex gap-3">
+            <span className="text-[10px] text-neutral-600"><Search size={10} className="inline mr-1" />搜索</span>
+            <span className="text-[10px] text-neutral-600"><FileText size={10} className="inline mr-1" />写作</span>
+            <span className="text-[10px] text-neutral-600"><BarChart3 size={10} className="inline mr-1" />分析</span>
+          </div>
+          <button onClick={clearHistory} className="text-[10px] text-neutral-600 hover:text-red-400 flex items-center gap-1">
+            <Trash2 size={10} />清空记忆
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

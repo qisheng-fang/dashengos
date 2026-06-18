@@ -163,91 +163,265 @@ def _default_agents() -> None:
 
 
 async def run_sub_agent(agent_id: str, inp: str, ctx: dict) -> dict:
-    """单 sub-agent 调用 (spec §35.4 agent.run)
-    P4.1 真接 LLM (SiliconFlow Qwen2.5-72B) + agent 自带 system_prompt
-    老板原则 #2: 0 行业务逻辑,薄薄一层
-    修复 3 bug:
-      - 删 /api/v1/agent/run 路径 (spec §35.2 明确 daemon 不调 Fastify REST)
-      - 删 global HAS_OPENAI (从未定义, 改用 module-level import 检测)
-      - Key 缺时返清晰错误 (不再 silent stub)
+    """Real agent loop with tool use — Phase 4 (2026-06-17)
+
+    不再是单次 LLM 调用，而是真正的 multi-step agent loop：
+      1. 发 user input + system prompt → LLM
+      2. LLM 返回 tool_calls → 执行工具 → 结果喂回 LLM
+      3. 重复直到 LLM 不再要求 tool_calls 或 达到 max_steps
+
+    支持的工具:
+      - web_search(query) — DuckDuckGo HTML 搜索
+      - file_read(path) — 读本地文件
+      - file_write(path, content) — 写本地文件
+      - sandbox_exec_python(code) — subprocess 跑 Python 代码
     """
+    import asyncio
+    import json as _json
+    import subprocess
+    import tempfile
+    import urllib.request
+    import urllib.parse
+
     agent = get_agent(agent_id)
     if not agent:
         raise ValueError(f"agent not found: {agent_id} (available: {list(AGENTS_REGISTRY.keys())})")
 
-    # 1) Opt-in: 走 backend gateway (默认 off, 后端端点尚未实现; 真做统一审计/限流时再开)
-    if os.environ.get("DEERFLOW_USE_BACKEND_AGENT", "false").lower() == "true":
-        backend_url = os.environ.get("DASHENG_BACKEND_URL", "http://127.0.0.1:8000")
-        try:
-            import urllib.request, json as _json
-            req = urllib.request.Request(
-                f"{backend_url}/api/v1/agent/run",
-                data=_json.dumps({"agentId": agent_id, "input": inp, "context": ctx}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = _json.loads(resp.read().decode())
-                return {"output": data.get("output", ""), "agent": agent_id, "model": data.get("model")}
-        except Exception as e:
-            logger.warning("backend agent.run failed (%s), falling back to direct LLM", e)
-
-    # 2) 主路径: 直调 LLM (按 spec §35.2 架构, daemon 内部 LLM 能力)
     if not HAS_OPENAI:
-        return {
-            "output": f"[{agent_id} stub] {inp[:200]}",
-            "agent": agent_id,
-            "tools": agent.get("tools", []),
-            "error": "openai package not installed · cd deerflow && uv add 'openai>=1.0,<2.0'",
-        }
+        return {"output": f"[{agent_id} stub] {inp[:200]}", "agent": agent_id,
+                "error": "openai package not installed"}
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        return {
-            "output": f"[{agent_id} stub] {inp[:200]}",
-            "agent": agent_id,
-            "tools": agent.get("tools", []),
-            "error": "OPENAI_API_KEY not set · export OPENAI_API_KEY=... 或放 ~/.workbuddy/credentials/OPENAI_API_KEY.env (daemon 启动时会自动 inject)",
-        }
+        return {"output": f"[{agent_id} stub] {inp[:200]}", "agent": agent_id,
+                "error": "OPENAI_API_KEY not set"}
 
     client = AsyncOpenAI(
         base_url=os.environ.get("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1"),
         api_key=api_key,
     )
-    sys_prompt = agent.get("system_prompt") or f"你是 {agent['name']} agent. 任务: {agent.get('description', '')}"
-    model = agent.get("model", "Qwen/Qwen2.5-72B-Instruct")
-    messages = [{"role": "system", "content": sys_prompt}]
-    # 上下文
+    model = agent.get("model") or os.environ.get("DEERFLOW_LLM_MODEL", "Qwen/Qwen2.5-72B-Instruct")
+    max_steps = min(agent.get("max_steps", 10), 20)  # 硬上限 20 步
+
+    # ---- 工具实现（异步） ----
+
+    async def _web_search(query: str) -> str:
+        """DuckDuckGo HTML 搜索，返回摘要文本"""
+        try:
+            encoded = urllib.parse.quote(query)
+            url = f"https://html.duckduckgo.com/html/?q={encoded}"
+            req = urllib.request.Request(url, headers={"User-Agent": "DaShengOS/0.3"})
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=15))
+            html = resp.read().decode("utf-8", errors="replace")
+            # 简单提取文本内容
+            import re
+            snippets = re.findall(r'class="result__snippet">(.*?)</a>', html, re.DOTALL)
+            if snippets:
+                results = [re.sub(r'<[^>]+>', '', s).strip()[:300] for s in snippets[:5]]
+                return "\n\n".join(f"[{i+1}] {r}" for i, r in enumerate(results))
+            return "无搜索结果"
+        except Exception as e:
+            return f"搜索失败: {e}"
+
+    async def _file_read(path: str) -> str:
+        try:
+            p = Path(path).expanduser().resolve()
+            loop = asyncio.get_running_loop()
+            content = await loop.run_in_executor(None, lambda: p.read_text(encoding="utf-8"))
+            max_len = 8000
+            return content[:max_len] + ("...(截断)" if len(content) > max_len else "")
+        except Exception as e:
+            return f"读文件失败: {e}"
+
+    async def _file_write(path: str, content: str) -> str:
+        try:
+            p = Path(path).expanduser().resolve()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, lambda: p.write_text(content, encoding="utf-8"))
+            return f"写入成功: {p} ({len(content)} 字符)"
+        except Exception as e:
+            return f"写文件失败: {e}"
+
+    async def _sandbox_exec_python(code: str) -> str:
+        try:
+            loop = asyncio.get_running_loop()
+            proc = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["python3", "-c", code],
+                    capture_output=True, text=True, timeout=30,
+                    cwd=tempfile.gettempdir(),
+                ),
+            )
+            output = ""
+            if proc.stdout:
+                output += proc.stdout
+            if proc.stderr:
+                output += f"\n[stderr]\n{proc.stderr}"
+            return output.strip() or "(无输出)"
+        except subprocess.TimeoutExpired:
+            return "执行超时 (30s)"
+        except Exception as e:
+            return f"执行失败: {e}"
+
+    # ---- 工具定义 (OpenAI function calling 格式) ----
+
+    TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "搜索互联网获取最新信息。输入查询关键词，返回搜索结果摘要。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "搜索关键词"}},
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "file_read",
+                "description": "读取本地文件内容",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "description": "文件路径"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "file_write",
+                "description": "写入内容到本地文件",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "文件路径"},
+                        "content": {"type": "string", "description": "要写入的内容"},
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sandbox_exec_python",
+                "description": "执行 Python 代码并返回输出",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string", "description": "Python 代码"}},
+                    "required": ["code"],
+                },
+            },
+        },
+    ]
+
+    # ---- 构建消息 ----
+
+    sys_prompt = agent.get("system_prompt") or (
+        f"你是 {agent['name']} agent。{agent.get('description', '')}\n\n"
+        "你可以使用工具来完成任务。在给出最终回答前，先用工具收集必要的信息。"
+    )
+    messages: list[dict] = [{"role": "system", "content": sys_prompt}]
     if ctx.get("history") and isinstance(ctx["history"], list):
         messages.extend(ctx["history"])
     if ctx.get("taskId"):
-        messages.append({"role": "system", "content": f"任务ID: {ctx['taskId']}"})
+        messages.append({"role": "system", "content": f"当前任务ID: {ctx['taskId']}"})
     messages.append({"role": "user", "content": inp})
 
-    try:
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=agent.get("temperature", 0.3),
-        )
-        output = resp.choices[0].message.content or ""
-        return {
-            "output": output,
-            "agent": agent_id,
-            "model": model,
-            "tools": agent.get("tools", []),
-            "tokens": {
-                "prompt": resp.usage.prompt_tokens if resp.usage else 0,
-                "completion": resp.usage.completion_tokens if resp.usage else 0,
-            } if resp.usage else None,
-        }
-    except Exception as e:
-        return {
-            "output": f"[{agent_id} LLM error] {inp[:100]}",
-            "agent": agent_id,
-            "tools": agent.get("tools", []),
-            "error": f"{type(e).__name__}: {e!s}"[:200],
-        }
+    # ---- Agent Loop ----
+
+    total_tokens = {"prompt": 0, "completion": 0}
+    final_output = ""
+    tool_calls_made: list[str] = []
+
+    for step in range(max_steps):
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=agent.get("temperature", 0.3),
+                tools=TOOLS,
+                tool_choice="auto",
+            )
+        except Exception as e:
+            logger.warning("LLM call failed at step %d: %s", step, e)
+            break
+
+        choice = resp.choices[0]
+        if resp.usage:
+            total_tokens["prompt"] += resp.usage.prompt_tokens
+            total_tokens["completion"] += resp.usage.completion_tokens
+
+        msg = choice.message
+
+        # 如果没有 tool_calls，说明 LLM 完成推理
+        if not msg.tool_calls:
+            final_output = msg.content or ""
+            messages.append({"role": "assistant", "content": final_output})
+            break
+
+        # 处理 tool_calls
+        assistant_msg: dict = {"role": "assistant", "content": msg.content or "", "tool_calls": []}
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
+            try:
+                args = _json.loads(tc.function.arguments)
+            except _json.JSONDecodeError:
+                args = {}
+
+            # 执行工具
+            if tool_name == "web_search":
+                result = await _web_search(args.get("query", ""))
+            elif tool_name == "file_read":
+                result = await _file_read(args.get("path", ""))
+            elif tool_name == "file_write":
+                result = await _file_write(args.get("path", ""), args.get("content", ""))
+            elif tool_name == "sandbox_exec_python":
+                result = await _sandbox_exec_python(args.get("code", ""))
+            else:
+                result = f"未知工具: {tool_name}"
+
+            tool_calls_made.append(f"{tool_name}({str(args)[:50]})")
+            assistant_msg["tool_calls"].append({
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tool_name, "arguments": tc.function.arguments},
+            })
+            messages.append(assistant_msg)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        else:
+            continue  # 所有 tool_calls 处理完，进入下一轮
+
+    else:
+        # 达到 max_steps，强制 LLM 给出最终回答
+        messages.append({"role": "user", "content": "请基于以上所有收集到的信息，给出你的最终回答。"})
+        try:
+            resp = await client.chat.completions.create(
+                model=model, messages=messages,
+                temperature=agent.get("temperature", 0.3),
+            )
+            final_output = resp.choices[0].message.content or ""
+            if resp.usage:
+                total_tokens["prompt"] += resp.usage.prompt_tokens
+                total_tokens["completion"] += resp.usage.completion_tokens
+        except Exception:
+            final_output = f"[{agent_id} 达到最大步数 {max_steps}，无最终输出]"
+
+    return {
+        "output": final_output,
+        "agent": agent_id,
+        "model": model,
+        "steps": step + 1,
+        "tool_calls": tool_calls_made,
+        "tokens": total_tokens,
+    }
 
 
 # ---------- skill registry (spec §35.4 skill.list/load) ---------

@@ -35,9 +35,17 @@ import { phase5Routes } from './api/phase5.js'
 import { stripeRoutes } from './api/stripe.js'
 import { metricsRoutes } from './api/metrics.js'
 import { socialRoutes } from './api/social.js'  // Track B · 3 社媒 agent 路由 (2026-06-15)
+import { browserRoutes } from './api/browser.js'  // Phase A.3 · Playwright 浏览器自动化 (2026-06-17)
+import { statusRoutes } from './api/status.js'  // D1 · 仿 Hermes SidebarStatusStrip (2026-06-17)
+import { doctorRoutes } from './api/doctor.js'  // D2 · 仿 Hermes doctor (2026-06-17)
+import { providersRoutes } from './api/providers.js'  // D3 · 仿 Hermes providers 插件化 (2026-06-17)
+import { oauthRoutes } from './api/oauth.js'  // D4 · 4 平台 OAuth (微信公众号/飞书/视频号/Shopify, 2026-06-18)
+import { selfHealRoutes } from './api/self-heal.js'  // P3 · 自我诊断/修复 (2026-06-18)
+import { socialWorker } from './agents/social/worker-client.js'  // Track B.1 · Cookie 解析器
 import { initSchema, sqlite } from './storage/db.js'
 import { sessionWSS } from './ws/session-ws.js'
 import { metrics } from './core/metrics.js'
+import { disconnect as redisDisconnect } from './cache/redis.js'
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -83,9 +91,31 @@ export async function buildServer(): Promise<FastifyInstance> {
   )
 
   await app.register(sensible)
+  // Track B.1 (2026-06-17): CORS origins 可从 env 配置
+  //   开发环境默认 localhost:3000/5173, 生产环境从 CORS_ORIGINS 读
+  const corsOrigins = config.CORS_ORIGINS
+    ? config.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+    : []
+  const hasCustomOrigins = corsOrigins.length > 0
+
   await app.register(cors, {
     origin: (origin, cb) => {
-      if (!origin || /^http:\/\/(127\.0\.0\.1|localhost):(3000|5173)$/.test(origin)) {
+      // 服务器端请求 (无 origin) — 允许
+      if (!origin) {
+        cb(null, true)
+        return
+      }
+      // 自定义生产域名
+      if (hasCustomOrigins) {
+        if (corsOrigins.includes(origin)) {
+          cb(null, true)
+        } else {
+          cb(new Error('CORS_DENIED'), false)
+        }
+        return
+      }
+      // 开发环境默认白名单
+      if (/^https?:\/\/(127\.0\.0\.1|localhost):(3000|5173|4173)$/.test(origin)) {
         cb(null, true)
       } else {
         cb(new Error('CORS_DENIED'), false)
@@ -94,7 +124,27 @@ export async function buildServer(): Promise<FastifyInstance> {
     credentials: true,
     maxAge: 86400,
   })
-  await app.register(helmet, { contentSecurityPolicy: false })
+  // Helmet: CSP 按需开启
+  await app.register(helmet, { contentSecurityPolicy: config.CSP_ENABLED ? {} as any : false })
+
+  // Track B.1 (2026-06-17): CSRF 保护 (仅生产环境, 对 state-changing methods 启用)
+  if (config.CSRF_ENABLED) {
+    // @fastify/csrf-protection uses cookie-based double-submit pattern
+    try {
+      const { default: csrfProtection } = await import('@fastify/csrf-protection')
+      await app.register(csrfProtection, {
+        cookieOpts: {
+          signed: true,
+          httpOnly: true,
+          sameSite: 'strict',
+          path: '/',
+        },
+      })
+      app.log.info('[security] CSRF protection enabled')
+    } catch {
+      app.log.warn('[security] @fastify/csrf-protection not installed, CSRF skipped')
+    }
+  }
   // Phase 7: per-tier rate limit
   //   已登录: 按 user_id 限流, max 按 billing_tier (free=60, pro=300, enterprise=1000)
   //   未登录: 按 IP 限流, 60 req/min
@@ -159,6 +209,36 @@ export async function buildServer(): Promise<FastifyInstance> {
     )
   })
 
+  // Phase 2 (2026-06-17): 全局 onError — 统一捕获未处理异常，脱敏敏感字段
+  app.setErrorHandler(async (error, req, reply) => {
+    // 脱敏：从错误信息中移除 Authorization header 和可能的 API key
+    const safeReq = {
+      method: req.method,
+      url: req.url,
+      id: req.id,
+    }
+
+    const err = error as Error & { statusCode?: number; code?: string }
+
+    // 如果已经是 Fastify 错误（ValidationError 等），直接用
+    if (err.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
+      req.log.warn({ err: err.message, req: safeReq }, 'client error')
+      return reply.status(err.statusCode).send({
+        code: err.code ?? 'CLIENT_ERROR',
+        message: err.message,
+        request_id: req.id,
+      })
+    }
+
+    // 500 — 内部错误，不泄露细节
+    req.log.error({ err: err.message, stack: err.stack?.slice(0, 500), req: safeReq }, 'internal error')
+    return reply.status(500).send({
+      code: 'INTERNAL_ERROR',
+      message: 'Internal server error',
+      request_id: req.id,
+    })
+  })
+
   // Phase D.8 (2026-06-16) X-Request-Id 回写 header (客户端 / 浏览器 devtools 可看)
   app.addHook('onSend', async (req, reply, payload) => {
     if (req.id) {
@@ -202,7 +282,41 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(systemRoutes, { prefix: '/api/v1/system' })
   await app.register(workspaceRoutes, { prefix: '/api/v1/workspace' })
   await app.register(secretRoutes, { prefix: '/api/v1/secrets' })
+
+  // Public health endpoint (no auth required) — 负载均衡 / K8s probe 用
+  app.get('/health', async (_req, reply) => {
+    let dbOk = false
+    try {
+      sqlite.prepare('SELECT 1').get()
+      dbOk = true
+    } catch { /* noop */ }
+    return reply.send({
+      status: dbOk ? 'ok' : 'degraded',
+      version: '0.3.0-p2',
+      uptime_sec: Math.floor(process.uptime()),
+      checks: {
+        database: dbOk ? 'ok' : 'fail',
+      },
+    })
+  })
+
   // Track B · 3 社媒 Agent 路由 (2026-06-15)
+  // Track B.1 (2026-06-17): 注入 Cookie 解析器 → social worker 自动带用户 cookie
+  socialWorker.setCookieResolver(async (platform: string, userId?: string) => {
+    if (!userId) return null
+    try {
+      const { decrypt, getCookieEncryptionKey } = await import('./core/crypto.js')
+      const row = sqlite
+        .prepare(
+          'SELECT encrypted_value FROM social_cookies WHERE user_id = ? AND platform = ? ORDER BY updated_at DESC LIMIT 1',
+        )
+        .get(userId, platform) as { encrypted_value: string } | undefined
+      if (!row) return null
+      return decrypt(row.encrypted_value, getCookieEncryptionKey())
+    } catch {
+      return null
+    }
+  })
   await app.register(socialRoutes, { prefix: '/api/v1/social' })
   // Phase 5 scaffold: /api/v1/auth/sso, /api/v1/marketplace, /api/v1/billing
   await app.register(phase5Routes, { prefix: '/api/v1' })
@@ -210,6 +324,60 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(stripeRoutes, { prefix: '/api/v1' })
   // Phase 8: Prometheus /metrics (公开, 不走 rate limit)
   await app.register(metricsRoutes, { prefix: '/api/v1' })
+  // Track C.1 (2026-06-17): 定时任务自动化引擎
+  const { automationRoutes } = await import('./api/automations.js')
+  await app.register(automationRoutes, { prefix: '/api/v1/automations' })
+
+  // Phase A.2 (2026-06-17): 三层记忆系统
+  const { memoryRoutes } = await import('./api/memory.js')
+  await app.register(memoryRoutes, { prefix: '/api/v1/memory' })
+
+  // D4 (2026-06-18): 4 平台 OAuth 路由
+  await app.register(oauthRoutes)
+
+  // Phase A.3 (2026-06-17): Playwright 浏览器自动化
+  await app.register(browserRoutes, { prefix: '/api/v1/browser' })
+
+  // Phase A.4 (2026-06-17): 文档生成 (PPTX/DOCX/PDF/XLSX)
+  const { documentRoutes } = await import('./api/documents.js')
+  await app.register(documentRoutes, { prefix: '/api/v1/documents' })
+
+  // Phase A.5 (2026-06-17): 可视化 (Chart.js 配置验证 + 调色板)
+  const { visualizationRoutes } = await import('./api/visualizations.js')
+  await app.register(visualizationRoutes, { prefix: '/api/v1/visualizations' })
+
+  // Phase B.2 (2026-06-17): 多 Agent 编排引擎
+  const { orchestratorRoutes } = await import('./api/orchestrator.js')
+  await app.register(orchestratorRoutes, { prefix: '/api/v1/orchestrator' })
+
+  // Phase C.1 (2026-06-17): 自我改进学习系统
+  const { learningRoutes } = await import('./api/learnings.js')
+  await app.register(learningRoutes, { prefix: '/api/v1/learnings' })
+
+  // Track C.2 (2026-06-17): Smart Dispatcher Chat REST bridge
+  const { chatRoutes } = await import('./api/chat.js')
+  await app.register(chatRoutes, { prefix: '/api/v1/chat' })
+
+  // D1 + D2 (2026-06-17): 仿 Hermes 状态条 + Doctor 自检
+  //    - /api/status       14 字段,前端 10s 拉一次显示色块
+  //    - /api/doctor       8 章节结构化检查 + 一键修复
+  //    - /api/system/...   重启 gateway / backend
+  await app.register(statusRoutes)
+  await app.register(doctorRoutes)
+  await app.register(providersRoutes)
+
+  // P3 (2026-06-18): 自我诊断/修复 API
+  await app.register(selfHealRoutes, { prefix: '/api/v1' })
+  // 初始化确认门
+  const { initConfirmationGate } = await import('./core/self-heal/gate.js')
+  initConfirmationGate({ elevatedMode: false })
+
+  // D6 (2026-06-18): Web Server 集中 - 仿 Hermes 集中 web_server
+  //    - /api/v1/dashboard       聚合 status + providers + oauth + doctor 4 块元数据
+  //    - /api/v1/dashboard/refresh 强制清缓存
+  // 注: dashboard 走自己的 preHandler [app.authenticate], 不依赖全局 hook
+  const { webRoutes } = await import('./web/index.js')
+  await app.register(webRoutes)
 
   return app
 }
@@ -251,6 +419,45 @@ async function main() {
   }
 
   const app = await buildServer()
+
+  // Phase 2 (2026-06-17): 优雅关闭 — SIGTERM/SIGINT → close DB + Redis + drain 请求
+  let shuttingDown = false
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    app.log.info({ signal }, 'shutting down gracefully...')
+
+    // 1. 停 accept 新连接，等 in-flight 请求完成 (max 10s)
+    try {
+      await app.close()
+      app.log.info('http server closed')
+    } catch (e) {
+      app.log.error({ err: (e as Error).message }, 'error closing http server')
+    }
+
+    // 2. 关闭 DB
+    try {
+      sqlite.close()
+      app.log.info('sqlite closed')
+    } catch (e) {
+      app.log.error({ err: (e as Error).message }, 'error closing sqlite')
+    }
+
+    // 3. 断开 Redis
+    try {
+      await redisDisconnect()
+      app.log.info('redis disconnected')
+    } catch (e) {
+      app.log.error({ err: (e as Error).message }, 'error disconnecting redis')
+    }
+
+    app.log.info('shutdown complete')
+    process.exit(0)
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
+
   try {
     await app.listen({ host: config.BACKEND_HOST, port: config.BACKEND_PORT })
     app.log.info(
@@ -258,6 +465,10 @@ async function main() {
       'DaShengOS backend listening',
     )
     app.log.info(`OpenAPI: http://${config.BACKEND_HOST}:${config.BACKEND_PORT}/docs`)
+
+    // Track C.1: 加载定时任务
+    const { loadAutomations } = await import('./core/scheduler.js')
+    loadAutomations()
   } catch (err) {
     app.log.error(err, 'failed to start')
     process.exit(1)

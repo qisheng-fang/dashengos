@@ -1,0 +1,42 @@
+{
+  "dashboard": {
+    "title": "DaShengOS · DeerFlow 2.0",
+    "panels": [
+      {
+        "title": "IPC Call Rate",
+        "type": "graph",
+        "targets": [
+          { "expr": "rate(dasheng_deerflow_rpc_calls_total[5m])" }
+        ]
+      },
+      {
+        "title": "P99 Latency (s)",
+        "type": "graph",
+        "targets": [
+          { "expr": "histogram_quantile(0.99, rate(dasheng_deerflow_rpc_latency_seconds_bucket[5m]))" }
+        ]
+      },
+      {
+        "title": "Worker Pool",
+        "type": "stat",
+        "targets": [
+          { "expr": "dasheng_deerflow_pool_size" }
+        ]
+      },
+      {
+        "title": "Sub-agent Tasks by Status",
+        "type": "piechart",
+        "targets": [
+          { "expr": "sum by (agent, status) (rate(dasheng_deerflow_subagent_tasks_total[5m]))" }
+        ]
+      },
+      {
+        "title": "Token Usage (per Hour)",
+        "type": "barchart",
+        "targets": [
+          { "expr": "sum by (agent) (rate(dasheng_deerflow_tokens_total[1h]))" }
+        ]
+      }
+    ]
+  }
+}

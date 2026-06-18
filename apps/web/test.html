@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Test</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module">
+    import { createRoot } from 'react-dom/client'
+    import { StrictMode } from 'react'
+    createRoot(document.getElementById('root')).render(
+      React.createElement(StrictMode, null, React.createElement('div', { className: 'test' }, 'Hello DaShengOS'))
+    )
+  </script>
+</body>
+</html>

@@ -12,6 +12,7 @@ const ConfigSchema = z.object({
 
   // Database
   DATABASE_URL: z.string().default('file:./data/dasheng.db'),
+  DATABASE_TYPE: z.enum(['sqlite', 'postgres']).default('sqlite'),
   DASHENG_DB_POOL_MAX: z.coerce.number().default(10),
 
   // Redis
@@ -35,6 +36,11 @@ const ConfigSchema = z.object({
   SILICONFLOW_DEFAULT_MODEL: z.string().default('Qwen/Qwen2.5-72B-Instruct'),
   SILICONFLOW_TIMEOUT_SEC: z.coerce.number().default(60),
 
+  // Track Agnes-AI 接入 (2026-06-18)
+  AGNES_AI_API_KEY: z.string().default(''),
+  AGNES_AI_BASE_URL: z.string().url().default('https://apihub.agnes-ai.com/v1'),
+  AGNES_AI_DEFAULT_MODEL: z.string().default('agnes-2.0-flash'),
+
   // Track D.1 (2026-06-15) · DeepSeek provider (备选, 跟 SiliconFlow 二选一)
   DEEPSEEK_API_KEY: z.string().default(''),
   DEEPSEEK_BASE_URL: z.string().url().default('https://api.deepseek.com/v1'),
@@ -50,6 +56,15 @@ const ConfigSchema = z.object({
   // Security
   DASHENG_STRICT_SECURITY: z.coerce.boolean().default(false),
   DASHENG_INJECTION_SCAN_ENABLED: z.coerce.boolean().default(true),
+
+  // Track B.1 (2026-06-17): 生产安全配置
+  //   CORS_ORIGINS: 逗号分隔的允许来源, 生产环境必须配真实域名
+  //     例: "https://dasheng.example.com,https://admin.example.com"
+  //   CSRF_ENABLED: 生产环境建议开启
+  //   CSP_ENABLED: 生产环境建议开启 Content-Security-Policy
+  CORS_ORIGINS: z.string().default(''),
+  CSRF_ENABLED: z.coerce.boolean().default(false),
+  CSP_ENABLED: z.coerce.boolean().default(false),
 
   // Audit
   AUDIT_LOG_RETENTION_DAYS: z.coerce.number().default(365),

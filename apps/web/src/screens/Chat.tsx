@@ -1,10 +1,12 @@
-// apps/web/src/screens/Chat.tsx · 2026-06-15
-// 直连 :8001 Python DeerFlow 2.0 backend (AG-UI GraphQL 协议) — 通过 src/lib/agent-client.ts
-// 不再打 :8000 (那个后端没 /api/v1/sessions/:id/messages 路由)
+// apps/web/src/screens/Chat.tsx · 2026-06-18 (D7-fix)
+// 双模式聊天:
+//   default agent → :8000 /api/v1/chat (backendChat, REST, 当前主用)
+//   social agents → :8000 /api/v1/social (socialExecuteAuto, 社媒)
+//   :8001 DeerFlow AG-UI (agentChat) 保留但暂未启用
 // 历史消息持久化到 localStorage (老板 hard reload 不丢历史)
-// 6/15 老板拍板: backend 改用 deerflow (底层 LLM engine 还是 hermes-agent), 路径 /api/copilotkit → /api/agent
-// Track B.3 (2026-06-15) 加: activeAgent 状态 + 3 社媒 agent 路由 (Douyin/Xhs/Wechat → :8000 /api/v1/social)
-// Track C.1 (2026-06-15) 加: 8 agent tab 切换器 (含 3 社媒 + 5 sandbox agent 占位)
+// Track B.3 (2026-06-15) activeAgent 状态 + 3 社媒 agent 路由
+// Track C.1 (2026-06-15) 8 agent tab 切换器
+// D7-fix (2026-06-18): default agent 从 :8001 切换到 :8000 后端
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { Card } from '@/components/ui/card'
@@ -23,7 +25,7 @@ import {
   Newspaper,
 } from 'lucide-react'
 import { useAuthStore } from '@/lib/auth-store'
-import { agentChat, type AgentMessage } from '@/lib/agent-client'
+import { backendChat } from '@/lib/agent-client'
 import { socialExecuteAuto } from '@/lib/social-media-client'
 import { AgentTabBar, type AgentTabId } from '@/components/chat-hermes/AgentTabBar'
 
@@ -69,9 +71,6 @@ function saveTitle(id: string, t: string) {
   }
 }
 
-function uiToAgent(m: UiMessage): AgentMessage {
-  return { id: m.id, role: m.role, content: m.content }
-}
 
 export function Chat() {
   const { id } = useParams({ from: '/_workspace/chats/$id' })
@@ -203,24 +202,30 @@ export function Chat() {
     }
 
     try {
-      const res = await agentChat({
+      // D7-fix: default agent 走 :8000 后端 /api/v1/chat (不再走失效的 :8001)
+      const token = useAuthStore.getState().accessToken
+      if (!token) {
+        throw new Error('未登录，请先登录后重试')
+      }
+      const res = await backendChat({
+        message: text,
         threadId: id,
-        messages: next.map(uiToAgent),
-        agentId: 'default',
+        history: next.map((m) => ({ role: m.role, content: m.content })),
+        token,
       })
-      if (res.assistantMessage) {
+      if (res.report) {
         const assistantMsg: UiMessage = {
-          id: res.assistantMessage.id,
+          id: newId(),
           role: 'assistant',
-          content: res.assistantMessage.content,
+          content: res.report,
           timestamp: Date.now(),
-          latency_ms: res.latencyMs,
+          latency_ms: (res as any).latencyMs,
         }
         const updated = [...next, assistantMsg]
         setMessages(updated)
         saveHistory(id, updated)
       } else {
-        setError(res.status.reason || 'agent 返回空消息')
+        setError(res.status === 'completed' ? 'AI 返回空回复' : `AI 引擎错误: ${res.status}`)
       }
     } catch (e) {
       setError((e as Error).message)
@@ -257,7 +262,7 @@ export function Chat() {
             <div className="text-xs text-neutral-400 mt-0.5 font-mono">
               thread #{id?.slice(-12)} ·{' '}
               {activeAgent === 'default'
-                ? 'backend :8001 (deerflow · Qwen2.5-72B)'
+                ? 'backend :8000 (LLM · SiliconFlow/DeepSeek)'
                 : `social :8000 → ${activeAgent}`}
             </div>
           </div>
@@ -309,7 +314,7 @@ export function Chat() {
         <div className="mx-6 mt-2 p-2 rounded bg-semantic-danger/10 border border-semantic-danger/30 text-sm text-semantic-danger">
           ⚠ {error}
           <div className="text-xs mt-1 opacity-70">
-            检查 :8001 agent bridge (<code>curl http://localhost:8001/health</code>)
+            检查 :8000 后端 (<code>curl http://localhost:8000/api/v1/status</code>)
           </div>
         </div>
       )}
@@ -326,7 +331,7 @@ export function Chat() {
               {user ? `${user.username}, 发条消息开始吧` : '发条消息开始吧'}
             </p>
             <p className="text-xs text-neutral-600">
-              后端: <code className="text-brand">:8001/api/agent</code> (deerflow · AG-UI 协议)
+              后端: <code className="text-brand">:8000/api/v1/chat</code> (LLM · REST)
             </p>
           </div>
         )}
@@ -362,7 +367,7 @@ export function Chat() {
             <div className="flex-shrink-0 w-8 h-8 rounded-full bg-semantic-info/20 flex items-center justify-center">
               <Loader2 size={16} className="text-semantic-info animate-spin" />
             </div>
-            <div className="text-sm text-neutral-400">deerflow 推理中...</div>
+            <div className="text-sm text-neutral-400">AI 思考中...</div>
           </div>
         )}
         <div ref={bottomRef} />

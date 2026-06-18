@@ -4,14 +4,14 @@
 //   1. Reads JWT from auth store (zustand) and adds Authorization: Bearer
 //   2. Auto-refreshes on 401 (calls /api/v1/auth/refresh once, retries)
 //   3. Throws ApiError with structured fields
-//   4. 127.0.0.1:8000 by default (Fastify backend); override via VITE_API_URL
+//   4. 空串 by default (走 Vite proxy /api → :8000); override via VITE_API_URL (生产环境)
 
 import { useAuthStore } from './auth-store'
 
 const DEFAULT_BASE =
   (typeof window !== 'undefined' && (window as any).__DASHE_API_URL__) ||
   (import.meta.env?.VITE_API_URL as string) ||
-  'http://127.0.0.1:8000'
+  ''  // 空串 = 走 Vite dev server proxy (/api → :8000), 避免浏览器走系统 http_proxy
 
 export class ApiError extends Error {
   constructor(

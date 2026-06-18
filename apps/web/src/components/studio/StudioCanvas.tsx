@@ -4,8 +4,9 @@
 // - 节点之间拖线连边 (handle system)
 // - 节点状态: idle / running / success / failed (WorkflowRunner 控制)
 // - 内置 3 模板: 抖音爆款 / 小红书种草 / 公众号日报
+// - ComfyUI 工作流导入 (2026-06-18): JSON 解析 + 模型配置面板 + 混编节点
 
-import { useCallback, useState } from 'react'
+import { useCallback, useState, useRef } from 'react'
 import {
   ReactFlow,
   Background,
@@ -25,9 +26,11 @@ import {
 import '@xyflow/react/dist/style.css'
 import { NODE_TYPES, type StudioNodeData } from './StudioNode'
 import { STUDIO_NODES, type StudioNodeKind } from './nodes'
-import { Play, RotateCcw, FolderOpen } from 'lucide-react'
+import { Play, RotateCcw, FolderOpen, Upload, Settings2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { socialExecuteAuto } from '@/lib/social-media-client'
+import { parseWorkflowJson, toReactFlow, type ParsedWorkflow, type ModelSlot } from '@/comfyui/parser'
+import { ModelConfigPanel } from '@/comfyui/ModelConfigPanel'
 
 export interface StudioCanvasProps {
   workflow?: { nodes: Node[]; edges: Edge[]; name?: string }
@@ -115,6 +118,13 @@ export function StudioCanvas({ workflow, onChange, onRun }: StudioCanvasProps) {
   const [edges, setEdges] = useState<Edge[]>(workflow?.edges ?? [])
   const [isRunning, setIsRunning] = useState(false)
 
+  // ComfyUI 工作流导入状态
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [parsedWorkflow, setParsedWorkflow] = useState<ParsedWorkflow | null>(null)
+  const [modelSlots, setModelSlots] = useState<ModelSlot[]>([])
+  const [showConfigPanel, setShowConfigPanel] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+
   const onNodesChange: OnNodesChange = useCallback(
     (changes: NodeChange[]) => {
       setNodes((nds) => {
@@ -183,6 +193,90 @@ export function StudioCanvas({ workflow, onChange, onRun }: StudioCanvasProps) {
     event.preventDefault()
     event.dataTransfer.dropEffect = 'move'
   }, [])
+
+  // ---- ComfyUI 工作流导入 ----
+
+  /** 处理文件选择 */
+  async function handleFileImport(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setImportError(null)
+
+    try {
+      const text = await file.text()
+      const json = JSON.parse(text)
+
+      // 校验是否是 ComfyUI 工作流
+      if (!validateComfyUIJson(json)) {
+        setImportError('不是有效的 ComfyUI 工作流 JSON 文件')
+        return
+      }
+
+      // 解析工作流
+      const parsed = parseWorkflowJson(json)
+      setParsedWorkflow(parsed)
+      setModelSlots(parsed.modelSlots)
+
+      // 转换为 ReactFlow 节点/边并渲染到画布
+      const { nodes: rfNodes, edges: rfEdges } = toReactFlow(parsed)
+      setNodes(rfNodes)
+      setEdges(rfEdges)
+      onChange?.({ nodes: rfNodes, edges: rfEdges })
+
+      // 如果有模型槽位，自动打开配置面板
+      if (parsed.modelSlots.length > 0) {
+        setShowConfigPanel(true)
+      }
+    } catch (e) {
+      setImportError(`解析失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    }
+
+    // 重置 input 以便重复导入同一文件
+    event.target.value = ''
+  }
+
+  /** 校验 JSON 是否为 ComfyUI 工作流格式 */
+  function validateComfyUIJson(json: unknown): boolean {
+    if (typeof json !== 'object' || json === null) return false
+    const data = json as Record<string, unknown>
+
+    // UI export: 有 nodes 数组且元素有 pos 属性
+    if (Array.isArray(data.nodes) && data.nodes.length > 0) {
+      const first = data.nodes[0] as any
+      return Array.isArray(first?.pos) && typeof first.type === 'string'
+    }
+
+    // API format: 键为数字字符串，值有 class_type
+    const keys = Object.keys(data)
+    if (keys.length > 0) {
+      const firstVal = data[keys[0]]
+      return typeof firstVal === 'object' && firstVal !== null && 'class_type' in (firstVal as object)
+    }
+
+    return false
+  }
+
+  /** 模型配置变更 → 更新画布节点 */
+  function handleModelConfigChange(nodeId: string, updates: Record<string, unknown>) {
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id !== nodeId) return n
+        return {
+          ...n,
+          data: { ...n.data, widgetValues: { ...(n.data as any).widgetValues, ...updates } },
+        }
+      })
+    )
+    // 同步更新 modelSlots 的 currentValue
+    setModelSlots((slots) =>
+      slots.map((s) => {
+        if (s.nodeId !== nodeId) return s
+        const newCurrentValue =
+          updates.ckpt_name ?? updates.unet_name ?? updates.lora_name ?? s.currentValue
+        return { ...s, currentValue: String(newCurrentValue ?? '') }
+      })
+    )
+  }
 
   // 工作流运行: 拓扑顺序触发每个 social 节点
   async function handleRun() {
@@ -263,6 +357,41 @@ export function StudioCanvas({ workflow, onChange, onRun }: StudioCanvasProps) {
           ))}
         </div>
         <div className="flex items-center gap-1.5">
+          {/* ComfyUI 导入 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            onChange={handleFileImport}
+            className="hidden"
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            title="导入 ComfyUI 工作流 (.json)"
+            data-testid="comfy-import-btn"
+          >
+            <Upload size={12} />
+            ComfyUI
+          </Button>
+          {parsedWorkflow && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowConfigPanel(true)}
+              title="配置模型参数"
+              data-testid="comfy-config-btn"
+            >
+              <Settings2 size={12} />
+              模型 ({modelSlots.filter((s) => s.currentValue).length}/{modelSlots.length})
+            </Button>
+          )}
+          {parsedWorkflow && (
+            <span className="text-[10px] text-neutral-600 hidden lg:inline">
+              {parsedWorkflow.workflowName} · {parsedWorkflow.totalNodes} 节点
+            </span>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -290,6 +419,13 @@ export function StudioCanvas({ workflow, onChange, onRun }: StudioCanvasProps) {
         </div>
       </div>
       <div className="flex-1" onDrop={onDrop} onDragOver={onDragOver}>
+        {/* 导入错误提示 */}
+        {importError && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-4 py-2 rounded-lg bg-red-500/15 border border-red-500/30 text-xs text-red-300 flex items-center gap-2">
+            <span>{importError}</span>
+            <button onClick={() => setImportError(null)} className="text-red-400 hover:text-red-200 text-[10px]">关闭</button>
+          </div>
+        )}
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -306,6 +442,14 @@ export function StudioCanvas({ workflow, onChange, onRun }: StudioCanvasProps) {
           <MiniMap pannable zoomable nodeStrokeWidth={2} maskColor="rgba(0,0,0,0.6)" />
         </ReactFlow>
       </div>
+
+      {/* ComfyUI 模型配置面板 (右侧抽屉) */}
+      <ModelConfigPanel
+        slots={modelSlots}
+        isOpen={showConfigPanel}
+        onClose={() => setShowConfigPanel(false)}
+        onConfigChange={handleModelConfigChange}
+      />
     </div>
   )
 }

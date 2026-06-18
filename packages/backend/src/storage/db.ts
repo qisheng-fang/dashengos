@@ -254,6 +254,23 @@ export function initSchema() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    -- 4b. Phase B.1 (2026-06-17): Skill 安装追踪
+    --   每个用户每个 skill 一条记录, uninstall 软删不真删
+    CREATE TABLE IF NOT EXISTS skill_installs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      skill_id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'installed' CHECK (status IN ('installed','uninstalled')),
+      installed_at INTEGER NOT NULL,
+      uninstalled_at INTEGER,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(user_id, skill_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_skill_installs_user ON skill_installs(user_id);
+    CREATE INDEX IF NOT EXISTS idx_skill_installs_status ON skill_installs(user_id, status);
+
     -- 5. Billing usage (30-day period)
     CREATE TABLE IF NOT EXISTS billing_usage (
       user_id TEXT NOT NULL,
@@ -310,6 +327,88 @@ export function initSchema() {
       success INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(ip, attempt_at);
+
+    -- 10. Track B.1 (2026-06-17): social media cookie store
+    --   per-user, per-platform encrypted cookie storage
+    --   encrypted_value: aes-256-gcm base64 ciphertext (built-in Node crypto)
+    --   platform: 'douyin' | 'xiaohongshu' | 'wechat'
+    --   metadata: JSON { nickname, avatar, expires_at, notes }
+    CREATE TABLE IF NOT EXISTS social_cookies (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      cookie_name TEXT NOT NULL DEFAULT 'default',
+      encrypted_value TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(user_id, platform, cookie_name),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_social_cookies_user ON social_cookies(user_id);
+    CREATE INDEX IF NOT EXISTS idx_social_cookies_platform ON social_cookies(user_id, platform);
+
+    -- 11. Track C.1 (2026-06-17): automation scheduler
+    --   trigger_type: 'cron' | 'once' | 'interval'
+    --   action: 'social_publish' | 'content_generate' | 'data_collect' | 'report_generate' | 'custom'
+    --   params: JSON (action-specific parameters)
+    --   status: 'active' | 'paused' | 'completed' | 'failed'
+    CREATE TABLE IF NOT EXISTS automations (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      trigger_type TEXT NOT NULL DEFAULT 'cron',
+      cron_expr TEXT,
+      action TEXT NOT NULL DEFAULT 'custom',
+      params TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'active',
+      last_run_at INTEGER,
+      next_run_at INTEGER,
+      run_count INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_automations_user ON automations(user_id);
+    CREATE INDEX IF NOT EXISTS idx_automations_status ON automations(user_id, status);
+
+    -- 12. Phase A.2 (2026-06-17): 三层记忆系统 · 长期记忆摘要表
+    CREATE TABLE IF NOT EXISTS memory_summaries (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      session_id TEXT,
+      summary TEXT NOT NULL,
+      keywords TEXT NOT NULL DEFAULT '',
+      embedding TEXT,  -- JSON array of floats
+      importance REAL NOT NULL DEFAULT 0.5,
+      source TEXT NOT NULL DEFAULT 'auto' CHECK (source IN ('auto','manual')),
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_user ON memory_summaries(user_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_session ON memory_summaries(session_id);
+
+    -- 13. Phase C.1 (2026-06-17): 自我改进系统 · 学习记录表
+    --   每次会话完成/归档后自动记录反思与可复用模式
+    CREATE TABLE IF NOT EXISTS agent_learnings (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      session_id TEXT,
+      agent_id TEXT NOT NULL,
+      task_type TEXT NOT NULL,  -- 'research' | 'content' | 'code' | 'social' etc
+      reflection TEXT NOT NULL,  -- LLM-generated self-reflection
+      lessons TEXT NOT NULL,     -- JSON array of lessons learned
+      pattern TEXT,              -- extracted reusable pattern/template
+      success_rating REAL NOT NULL DEFAULT 0.5,  -- 0-1 self-rated success
+      tokens_saved INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_learnings_user ON agent_learnings(user_id);
+    CREATE INDEX IF NOT EXISTS idx_learnings_type ON agent_learnings(user_id, task_type);
   `)
 
   // Phase 7: 增量迁移 (旧 DB 加列, 新 DB 上面的 CREATE TABLE 已含)

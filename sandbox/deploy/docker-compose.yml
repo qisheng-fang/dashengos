@@ -1,0 +1,233 @@
+# docker-compose.yml · DaShengOS v0.3 Phase 7.5+8
+#
+# Full local stack: sandbox + supervisord + backend + web + prometheus + grafana
+# Build context: monorepo root (use `-f sandbox/deploy/docker-compose.yml`)
+#
+# Usage:
+#   docker compose -f sandbox/deploy/docker-compose.yml up -d --build
+#   docker compose -f sandbox/deploy/docker-compose.yml logs -f backend
+#   curl http://127.0.0.1:8000/docs        # Backend OpenAPI
+#   curl http://127.0.0.1:8000/api/v1/metrics   # Prometheus 指标
+#   open http://127.0.0.1:3000           # Web UI
+#   open http://127.0.0.1:3001           # Grafana (admin / admin)
+#   open http://127.0.0.1:9090           # Prometheus
+#
+# Tear down:
+#   docker compose -f sandbox/deploy/docker-compose.yml down -v
+
+services:
+  # ---------------------------------------------------------------------------
+  # sandbox — Go daemon exposing JSON-RPC 2.0 over Unix socket
+  #   (no healthcheck: distroless image 无 shell, test -S 不可用; supervisord 检测)
+  # ---------------------------------------------------------------------------
+  sandbox:
+    build:
+      context: ../..
+      dockerfile: sandbox/deploy/Dockerfile
+    image: dasheng/sandbox:v0.3.0-phase8
+    container_name: dasheng-sandbox
+    restart: unless-stopped
+    volumes:
+      - sandbox-sockets:/tmp/dasheng
+      - sandbox-skills:/home/nonroot/.dasheng/skills:ro
+      - sandbox-audit:/home/nonroot/.dasheng
+    environment:
+      DASHE_SANDBOX_SOCKET: /tmp/dasheng/sandbox.sock
+      DASHE_BROWSER_MOCK: "1"
+    networks:
+      - dasheng
+
+  # ---------------------------------------------------------------------------
+  # deerflow — Python daemon, JSON-RPC 2.0 over Unix socket (Phase 5 新增)
+  # ---------------------------------------------------------------------------
+  deerflow:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.backend
+      target: deerflow
+    image: dasheng/deerflow:v0.3.0-phase5
+    container_name: dasheng-deerflow
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      OPENAI_API_KEY: ${SILICONFLOW_API_KEY:-}
+      OPENAI_BASE_URL: https://api.siliconflow.cn/v1
+      DEERFLOW_SOCKET_PATH: /tmp/dasheng/deerflow.sock
+      DEERFLOW_ENABLED: "true"
+      PYTHONUNBUFFERED: "1"
+    entrypoint: ["python3", "-u", "-m", "deerflow.daemon"]
+    working_dir: /opt/deerflow
+    volumes:
+      - sandbox-sockets:/tmp/dasheng
+    networks:
+      - dasheng
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /tmp/dasheng/deerflow.sock || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # supervisord — process manager. Spawns sandbox on the host (or in this
+  # case, in the same container). Restarts on crash with backoff.
+  # ---------------------------------------------------------------------------
+  supervisord:
+    image: dasheng/sandbox:v0.3.0-phase8
+    container_name: dasheng-supervisord
+    restart: unless-stopped
+    depends_on:
+      - sandbox
+    entrypoint: ["/supervisord"]
+    command:
+      - "-bin=/sandbox"
+      - "-socket=/tmp/dasheng/sandbox.sock"
+      - "-workers=1"
+      - "-health-period=10s"
+    volumes:
+      - sandbox-sockets:/tmp/dasheng
+    networks:
+      - dasheng
+
+  # ---------------------------------------------------------------------------
+  # backend — Fastify + SQLite (Phase 2-8: 50+ 端点, 21+ 张表, 真 refresh, etc)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ../..
+      dockerfile: packages/backend/Dockerfile
+    image: dasheng/backend:v0.3.0-phase8
+    container_name: dasheng-backend
+    restart: unless-stopped
+    depends_on:
+      - sandbox
+      - deerflow
+    environment:
+      NODE_ENV: production
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: "8000"
+      # 强约束: 32 字符 min
+      DASHENG_JWT_SECRET: dev-only-secret-please-replace-in-prod-32chars
+      DASHENG_JWT_ACCESS_TTL_SEC: "900"
+      DASHENG_JWT_REFRESH_TTL_SEC: "604800"
+      DASHENG_AUDIT_LOG_HMAC_SECRET: dev-only-audit-hmac-secret-32chars-min-aaaaa
+      LOG_LEVEL: info
+      METRICS_ENABLED: "true"
+      # Stripe (dev 用 mock 模式跳过验签)
+      DASHENG_STRIPE_MOCK_MODE: "true"
+      DASHENG_STRIPE_WEBHOOK_SECRET: ""
+      # Phase 9: Ollama (host.docker.internal → 宿主机的 ollama serve)
+      OLLAMA_HOST: "http://host.docker.internal:11434"
+      DEFAULT_MODEL: "ollama:qwen2.5:3b"
+      # 5 个 SSO provider (dev mock creds; 生产换真 creds)
+      DASHE_SSO_GITHUB_CLIENT_ID: dev_github
+      DASHE_SSO_GITHUB_CLIENT_SECRET: dev_github_secret
+      DASHE_SSO_GOOGLE_CLIENT_ID: dev_google
+      DASHE_SSO_GOOGLE_CLIENT_SECRET: dev_google_secret
+      DASHE_SSO_MICROSOFT_CLIENT_ID: dev_microsoft
+      DASHE_SSO_MICROSOFT_CLIENT_SECRET: dev_microsoft_secret
+      DASHE_SSO_FEISHU_CLIENT_ID: dev_feishu
+      DASHE_SSO_FEISHU_CLIENT_SECRET: dev_feishu_secret
+      DASHE_SSO_DINGTALK_CLIENT_ID: dev_dingtalk
+      DASHE_SSO_DINGTALK_CLIENT_SECRET: dev_dingtalk_secret
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # DATABASE_URL=file:./data/dasheng.db 相对 /app CWD, 实际是 /app/data/
+      - backend-data:/app/data
+      # Phase 10: 挂 sandbox unix socket, backend 通过 /tmp/dasheng/sandbox.sock
+      # 调 sandbox IPC (JSON-RPC 2.0 over unix socket)
+      - sandbox-sockets:/tmp/dasheng
+    networks:
+      - dasheng
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8000/docs/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # web — Vite 静态产物 + nginx (SPA fallback + /api/ 反代 → backend)
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    image: dasheng/web:v0.3.0-phase8
+    container_name: dasheng-web
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - dasheng
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # prometheus — scrapes sandbox metrics + backend /metrics
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: dasheng-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - dasheng
+    depends_on:
+      - sandbox
+      - backend
+
+  # ---------------------------------------------------------------------------
+  # grafana — visualization for sandbox + backend metrics
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: dasheng-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/sandbox.json:ro
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks:
+      - dasheng
+    depends_on:
+      - prometheus
+
+volumes:
+  sandbox-sockets:
+  sandbox-skills:
+  sandbox-audit:
+  backend-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  dasheng:
+    driver: bridge
+    name: dasheng-net

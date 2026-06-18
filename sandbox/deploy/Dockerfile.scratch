@@ -1,0 +1,14 @@
+# Minimal DaShengOS sandbox image (no base image required)
+# Uses scratch — Go binaries are static (CGO_ENABLED=0)
+# Build: docker build -f deploy/Dockerfile.scratch -t dasheng/sandbox:v0.3.0-phase4 .
+#
+# Note: scratch images have no /tmp, no shell, no /etc/passwd.
+# For production use the distroless variant (deploy/Dockerfile.distroless).
+FROM scratch
+COPY bin/sandbox /sandbox
+COPY bin/supervisord /supervisord
+COPY bin/sandbox-exporter /sandbox-exporter
+VOLUME ["/tmp/dasheng"]
+ENV DASHE_SANDBOX_SOCKET=/tmp/dasheng/sandbox.sock
+EXPOSE 9100
+ENTRYPOINT ["/sandbox"]

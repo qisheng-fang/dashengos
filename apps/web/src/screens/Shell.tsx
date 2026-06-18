@@ -10,17 +10,18 @@
 
 import { useUIStore } from '@/store/ui'
 import { useAuthStore } from '@/lib/auth-store'
-import { http } from '@/lib/api'
+import { http, api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import { Menu, Settings, Sun, Moon, Plus, Search, LogOut, Loader2 } from 'lucide-react'
+import { Menu, Settings, Sun, Moon, Search, LogOut, Loader2 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useBreakpoint, type Breakpoint } from '@/hooks/useBreakpoint'
 import { Link, useLocation, useNavigate } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
-import { MessageSquare, Bot, Zap, FolderOpen, Wrench, Workflow } from 'lucide-react'
+import { MessageSquare, Bot, Zap, FolderOpen, Wrench, Workflow, FileText, BarChart3, Puzzle, GitBranch } from 'lucide-react'
 import { MobileNav } from '@/components/MobileNav'
+import { SidebarStatusStrip } from '@/components/SidebarStatusStrip'  // D1 · 仿 Hermes (2026-06-17)
 
 interface ShellProps {
   children: ReactNode
@@ -31,8 +32,14 @@ const NAV_ITEMS = [
   { to: '/agents', label: 'Agent', icon: Bot },
   { to: '/mcp', label: 'MCP', icon: Zap },
   { to: '/files', label: '文件', icon: FolderOpen },
-  // Track C.2 (2026-06-15) 加 Studio 入口 (ComfyUI 式工作流)
+  { to: '/skills', label: 'Skills', icon: Puzzle },
   { to: '/studio', label: 'Studio', icon: Workflow },
+  // Phase A.4 (2026-06-17) 加文档生成入口
+  { to: '/documents', label: '文档', icon: FileText },
+  // Phase A.5 (2026-06-17) 加可视化入口
+  { to: '/visualizations', label: '可视化', icon: BarChart3 },
+  // Phase B.2 (2026-06-17) 加工作流编排入口
+  { to: '/workflows', label: '工作流', icon: GitBranch },
   { to: '/settings', label: '设置', icon: Wrench },
 ]
 
@@ -45,6 +52,15 @@ export function Shell({ children }: ShellProps) {
   const clearAuth = useAuthStore((s) => s.clear)
   const bp = useBreakpoint()
   const location = useLocation()
+
+  // 全局 401 处理：token 过期自动跳登录
+  useEffect(() => {
+    api.setUnauthorizedHandler(() => {
+      clearAuth()
+      void navigate({ to: '/login' })
+      return false // 不自动重试
+    })
+  }, [clearAuth, navigate])
 
   async function handleLogout() {
     try {
@@ -168,47 +184,6 @@ export function Shell({ children }: ShellProps) {
 
 function Sidebar({ bp, currentPath }: { bp: Breakpoint; currentPath: string }) {
   const isCollapsed = bp === 'tablet'
-  const navigate = useNavigate()
-  const [recentSessions, setRecentSessions] = useState<Array<{ id: string; title: string; agent_id: string }>>([])
-  const [loadingSessions, setLoadingSessions] = useState(false)
-
-  // 拉最近会话 (失败/未登录 → 静默空列表)
-  useEffect(() => {
-    let cancelled = false
-    setLoadingSessions(true)
-    http
-      .get<{ sessions: Array<{ id: string; title: string; agent_id: string; updated_at: number }> }>(
-        '/api/v1/sessions',
-      )
-      .then((res) => {
-        if (cancelled) return
-        const sorted = [...res.sessions]
-          .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))
-          .slice(0, 8)
-        setRecentSessions(sorted)
-      })
-      .catch(() => {
-        // 静默空
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingSessions(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  async function handleNewSession() {
-    try {
-      const res = await http.post<{ id: string }>('/api/v1/sessions', {
-        agent_id: 'deep-researcher',
-        title: '新会话',
-      })
-      void navigate({ to: '/chats/$id', params: { id: res.id } })
-    } catch {
-      // 静默
-    }
-  }
 
   return (
     <nav className="p-3 space-y-1 h-full flex flex-col relative">
@@ -235,45 +210,10 @@ function Sidebar({ bp, currentPath }: { bp: Breakpoint; currentPath: string }) {
         )
       })}
 
-      {!isCollapsed && (
-        <>
-          <div className="border-t border-neutral-800 my-3" />
-          <div className="px-3 py-2 text-xs font-medium text-neutral-400 uppercase tracking-wider flex items-center justify-between">
-            <span>最近会话</span>
-            {loadingSessions && <Loader2 size={10} className="animate-spin" />}
-          </div>
-          <ul className="space-y-0.5 max-h-64 overflow-y-auto">
-            {recentSessions.length === 0 && !loadingSessions ? (
-              <li className="px-3 py-1.5 text-xs text-neutral-500">暂无会话</li>
-            ) : (
-              recentSessions.map((s) => (
-                <li key={s.id}>
-                  <Link
-                    to="/chats/$id"
-                    params={{ id: s.id }}
-                    className="block px-3 py-1.5 rounded text-xs text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100 truncate transition-colors"
-                    title={`${s.title} · ${s.agent_id}`}
-                  >
-                    {s.title || `会话 ${s.id.slice(-6)}`}
-                  </Link>
-                </li>
-              ))
-            )}
-          </ul>
-        </>
-      )}
+      {/* 最近会话 & 新会话按钮已隐藏 — 老板确认只需主工作台一个对话入口 (2026-06-18) */}
 
-      <div className="mt-auto pt-3 border-t border-neutral-800">
-        <Button
-          size="sm"
-          className="w-full"
-          leftIcon={<Plus size={14} />}
-          onClick={handleNewSession}
-          aria-label="新会话"
-        >
-          {isCollapsed ? '' : '新会话'}
-        </Button>
-      </div>
+      {/* D1 · 仿 Hermes SidebarStatusStrip (2026-06-17) */}
+      {!isCollapsed && <SidebarStatusStrip />}
     </nav>
   )
 }
@@ -454,32 +394,162 @@ function RightPanel() {
       )}
 
       {activeTab === 'files' && (
-        <div className="text-xs text-neutral-500 p-2">
-          {sessionId ? (
-            <span>
-              Session <span className="font-mono">{sessionId.slice(-8)}</span> · 文件浏览
-              <br />
-              <span className="text-neutral-600">(Phase 10.5 接 /api/v1/tools/file.read 列表当前 session 的 audit 文件)</span>
-            </span>
-          ) : (
-            <span>无 active session. 进 Chat 屏才显示文件</span>
-          )}
-        </div>
+        <FilesTab sessionId={sessionId} />
       )}
 
       {activeTab === 'trace' && (
-        <div className="text-xs text-neutral-500 p-2">
-          {sessionId ? (
-            <span>
-              Session <span className="font-mono">{sessionId.slice(-8)}</span> · Trace
-              <br />
-              <span className="text-neutral-600">(Phase 10.5 接 /api/v1/audit/logs 实时拉)</span>
+        <TraceTab sessionId={sessionId} />
+      )}
+    </div>
+  )
+}
+
+// Phase 3 (2026-06-17): FilesTab — 真接 /api/v1/files 拉文件列表
+interface FileItem {
+  id: string
+  filename: string
+  mime_type?: string
+  size_bytes?: number
+  created_at?: string
+}
+
+function FilesTab({ sessionId }: { sessionId: string | undefined }) {
+  const [files, setFiles] = useState<FileItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      setError(null)
+      try {
+        const res = await http.get<{ files: FileItem[]; count: number }>('/api/v1/files')
+        if (cancelled) return
+        setFiles(res.files ?? [])
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message || '加载文件失败')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [sessionId])
+
+  if (loading) {
+    return <div className="text-xs text-neutral-500 p-2 flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> 加载文件...</div>
+  }
+
+  if (error) {
+    return (
+      <div className="text-xs p-2">
+        <div className="text-semantic-danger mb-1">⚠ {error}</div>
+        <div className="text-neutral-600">Session: {sessionId ? sessionId.slice(-8) : '无'}</div>
+      </div>
+    )
+  }
+
+  if (files.length === 0) {
+    return (
+      <div className="text-xs text-neutral-500 p-2">
+        {sessionId
+          ? `Session ${sessionId.slice(-8)} · 暂无文件`
+          : '无 active session. 进 Chat 屏才显示文件'}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="text-xs text-neutral-400 uppercase tracking-wider px-1 mb-1">
+        文件 ({files.length})
+      </div>
+      {files.map((f) => (
+        <div key={f.id} className="flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-neutral-800 transition-colors">
+          <span className="text-neutral-500">📄</span>
+          <span className="font-mono text-neutral-200 truncate flex-1">{f.filename}</span>
+          {f.size_bytes != null && (
+            <span className="text-neutral-500 tabular-nums">
+              {f.size_bytes < 1024 ? `${f.size_bytes}B` : f.size_bytes < 1024 * 1024 ? `${(f.size_bytes / 1024).toFixed(1)}K` : `${(f.size_bytes / (1024 * 1024)).toFixed(1)}M`}
             </span>
-          ) : (
-            <span>无 active session. 进 Chat 屏才显示 Trace</span>
           )}
         </div>
-      )}
+      ))}
+    </div>
+  )
+}
+
+// Phase 3 (2026-06-17): TraceTab — 显示当前 session 的最近消息
+interface TraceMessage {
+  id: string
+  role: string
+  content: string
+  created_at?: string
+}
+
+function TraceTab({ sessionId }: { sessionId: string | undefined }) {
+  const [messages, setMessages] = useState<TraceMessage[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!sessionId) {
+      setMessages([])
+      return
+    }
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      try {
+        const res = await http.get<{ messages: TraceMessage[]; count: number }>(
+          `/api/v1/sessions/${sessionId}/messages?limit=20`,
+        )
+        if (cancelled) return
+        setMessages(res.messages ?? [])
+      } catch {
+        // 静默忽略 — trace 是辅助功能
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [sessionId])
+
+  if (!sessionId) {
+    return <div className="text-xs text-neutral-500 p-2">无 active session. 进 Chat 屏才显示 Trace</div>
+  }
+
+  if (loading) {
+    return <div className="text-xs text-neutral-500 p-2 flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> 加载消息...</div>
+  }
+
+  if (messages.length === 0) {
+    return (
+      <div className="text-xs p-2">
+        <div className="text-neutral-400">Session <span className="font-mono">{sessionId.slice(-8)}</span></div>
+        <div className="text-neutral-600 mt-1">暂无消息. 在 Chat 中输入内容后会自动显示.</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-xs text-neutral-400 uppercase tracking-wider px-1">
+        Session <span className="font-mono">{sessionId.slice(-8)}</span> · {messages.length} 条消息
+      </div>
+      {messages.map((m) => (
+        <div
+          key={m.id}
+          className={cn(
+            'px-2 py-1.5 rounded text-xs',
+            m.role === 'user' ? 'bg-neutral-800/50 text-neutral-300' : 'bg-brand/5 text-neutral-400',
+          )}
+        >
+          <div className="text-[10px] text-neutral-500 mb-0.5 uppercase">{m.role}</div>
+          <div className="line-clamp-3">{m.content}</div>
+        </div>
+      ))}
     </div>
   )
 }

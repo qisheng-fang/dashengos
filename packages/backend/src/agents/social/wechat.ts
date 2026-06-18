@@ -1,8 +1,10 @@
 // packages/backend/src/agents/social/wechat.ts · Track B (2026-06-15)
 // 微信公众号 Agent — 登录态 / 长文生成 / 文章发布 / 文章列表
 // 工具链: wechat-mp-bridge :9113 (5 端点: login/status/sessions/publish_article/articles)
+// Phase 4 (2026-06-17): generate_article 接 SiliconFlow LLM 生成真实内容
 
 import { SocialAgent, type SocialToolDef } from './index.js'
+import { generateWechatArticle } from './llm-helper.js'
 
 export class WechatAgent extends SocialAgent {
   readonly id = 'WechatAgent'
@@ -62,30 +64,24 @@ export class WechatAgent extends SocialAgent {
 
   protected async tool_generate_article(params: Record<string, unknown>) {
     const topic = String(params.topic || '深度分析')
-    // LLM 不可用时返模板
-    const content = `## ${topic}
-
-> 大师 OS 公众号 Agent 自动生成
-
-### 一、背景
-
-${topic} 是当前行业关注的重点话题。本文将从多个角度展开分析。
-
-### 二、要点
-
-- 要点一：数据来自行业真实反馈
-- 要点二：配图可由 Pixelle 视频生成链路统一处理
-- 要点三：发布走 wechat-mp worker (:9113)
-
-### 三、结论
-
-本文为公众号 Agent Track B 初版, 真实生成需 LLM key 接入 (Track A 阻塞中)。`
+    const result = await generateWechatArticle(topic)
+    // 从 LLM 输出中提取标题（第一行 # 开头的）
+    const lines = result.text.split('\n')
+    let title = `深度分析: ${topic}`.slice(0, 64)
+    for (const line of lines) {
+      const trimmed = line.replace(/^#+\s*/, '').trim()
+      if (trimmed && line.startsWith('#') && trimmed.length <= 60) {
+        title = trimmed.slice(0, 64)
+        break
+      }
+    }
     return {
-      is_real: false,
-      title: `深度分析: ${topic}`.slice(0, 64),
-      content,
+      is_real: result.is_real,
+      title,
+      content: result.text,
       topic,
-      note: '真实生成需 LLM key 接入',
+      model: result.model,
+      note: result.is_real ? 'LLM 生成 (SiliconFlow)' : '降级模板 (请配 SILICONFLOW_API_KEY)',
     }
   }
 

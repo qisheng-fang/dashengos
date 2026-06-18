@@ -1,0 +1,89 @@
+# k8s/deerflow.yaml · v0.3 spec §37.4
+# 升 B 模式时用 (独立扩缩容 · 故障隔离)
+# 嵌入模式默认不需要,留作 K8s 部署参考
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deerflow
+  namespace: dasheng
+  labels:
+    app: deerflow
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: deerflow
+  template:
+    metadata:
+      labels:
+        app: deerflow
+    spec:
+      initContainers:
+        - name: wait-for-backend
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z backend 8000; do sleep 2; done']
+      containers:
+        - name: deerflow
+          image: dasheng/deerflow:0.3.0
+          ports:
+            - containerPort: 8080
+          env:
+            - { name: DEERFLOW_MODE, value: standalone }
+            - { name: BACKEND_URL, value: http://backend:8000 }
+            - { name: DEERFLOW_SOCKET_PATH, value: /var/run/dasheng/deerflow.sock }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+          readinessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - |
+                  import asyncio, os
+                  async def check():
+                      import sys
+                      socket_path = os.environ.get("DEERFLOW_SOCKET_PATH", "/var/run/dasheng/deerflow.sock")
+                      if not os.path.exists(socket_path):
+                          sys.exit(1)
+                      # 连 socket 发 health.ping
+                      try:
+                          reader, writer = await asyncio.open_unix_connection(socket_path)
+                          writer.write(b'{"jsonrpc":"2.0","method":"health.ping","id":1}\n')
+                          await writer.drain()
+                          data = await asyncio.wait_for(reader.readline(), timeout=5)
+                          if b'"status":"ok"' in data:
+                              writer.close()
+                              return
+                      except:
+                          pass
+                      sys.exit(1)
+                  asyncio.run(check())
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - test
+                - -S
+                - /var/run/dasheng/deerflow.sock
+            initialDelaySeconds: 30
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: deerflow
+  namespace: dasheng
+spec:
+  selector:
+    app: deerflow
+  ports:
+    - port: 8080
+      targetPort: 8080

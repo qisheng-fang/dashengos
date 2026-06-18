@@ -1,0 +1,15 @@
+# apps/web/.gitignore
+node_modules/
+dist/
+.vite/
+.DS_Store
+*.local
+*.log
+.env
+.env.local
+.env.*.local
+src/routeTree.gen.ts
+.storybook-static/
+storybook-static/
+coverage/
+.lighthouseci/

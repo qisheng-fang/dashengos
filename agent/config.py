@@ -59,6 +59,7 @@ class AgentConfig:
         api_key = (
             os.environ.get("DASHENG_LLM_API_KEY")
             or os.environ.get("OPENROUTER_API_KEY")
+            or os.environ.get("SILICONFLOW_API_KEY")
             or os.environ.get("DEEPSEEK_API_KEY")
             or os.environ.get("OPENAI_API_KEY")
             or os.environ.get("ANTHROPIC_API_KEY")

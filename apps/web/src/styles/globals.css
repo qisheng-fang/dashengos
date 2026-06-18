@@ -1,0 +1,52 @@
+/* apps/web/src/styles/globals.css · v0.3 spec 附录 F.2 (CSS variables 暗色优先) */
+/* + Tailwind layers */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* 暗色（默认） */
+    --bg-primary: #0A0A0F;
+    --bg-secondary: #111827;
+    --bg-tertiary: #1F2937;
+    --text-primary: #F3F4F6;
+    --text-soft: #9CA3AF;
+    --border: #374151;
+
+    --brand: #FF6B35;
+    --brand-hover: #FF8559;
+    --success: #34D399;
+    --warning: #FBBF24;
+    --danger: #F87171;
+    --info: #60A5FA;
+  }
+
+  html.light {
+    --bg-primary: #FFFFFF;
+    --bg-secondary: #F9FAFB;
+    --bg-tertiary: #F3F4F6;
+    --text-primary: #111827;
+    --text-soft: #6B7280;
+    --border: #E5E7EB;
+    /* 品牌色不变 */
+  }
+}
+
+@layer base {
+  body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: theme('fontFamily.sans');
+    font-size: theme('fontSize.base');
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* 键盘焦点环 — a11y 关键 */
+  *:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+}

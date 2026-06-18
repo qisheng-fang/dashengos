@@ -1,0 +1,9 @@
+# DaShengOS · 私有 AI 工作台
+# v0.3 spec §6.4 — robots.txt 允许内网爬取, 禁止公网索引
+
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /docs
+
+Sitemap: http://127.0.0.1:3000/sitemap.xml

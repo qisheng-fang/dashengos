@@ -115,7 +115,7 @@ export async function sessionRoutes(app: FastifyInstance) {
             signal: AbortSignal.timeout(300_000),
           })
           if (!res.ok) {
-            const errText = await res.text().catch(() => '')
+            await res.text().catch(() => '')
             return reply.code(502).send({ code: 'OLLAMA_UPSTREAM_FAILED', status: res.status, message: sanitizeUpstreamError() })
           }
           const json = (await res.json()) as {
@@ -182,7 +182,7 @@ export async function sessionRoutes(app: FastifyInstance) {
             signal: AbortSignal.timeout(config.SILICONFLOW_TIMEOUT_SEC * 1000),
           })
           if (!res.ok) {
-            const errText = await res.text().catch(() => '')
+            await res.text().catch(() => '')
             return reply.code(502).send({
               code: 'SILICONFLOW_UPSTREAM_FAILED',
               status: res.status,
@@ -260,7 +260,7 @@ export async function sessionRoutes(app: FastifyInstance) {
             signal: AbortSignal.timeout(config.SILICONFLOW_TIMEOUT_SEC * 1000),
           })
           if (!res.ok) {
-            const errText = await res.text().catch(() => '')
+            await res.text().catch(() => '')
             return reply.code(502).send({
               code: 'DEEPSEEK_UPSTREAM_FAILED',
               status: res.status,
@@ -333,5 +333,34 @@ export async function sessionRoutes(app: FastifyInstance) {
       return reply.code(404).send({ code: 'SESSION_NOT_FOUND' })
     }
     return reply.send({ id, status: 'ABORTED' })
+  })
+
+  // POST /sessions/:id/archive — 归档会话并自动生成记忆摘要
+  // Phase A.2 (2026-06-17): 三层记忆系统 · 归档时自动调用 autoSummarize
+  app.post('/:id/archive', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const userId = req.user!.id
+    const now = Date.now()
+
+    const res = sqlite
+      .prepare("UPDATE sessions SET status = 'ARCHIVED', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'ACTIVE'")
+      .run(now, id, userId)
+    if (res.changes === 0) {
+      return reply.code(404).send({ code: 'SESSION_NOT_FOUND' })
+    }
+
+    // 异步生成记忆摘要 (不阻塞响应)
+    const { autoSummarize } = await import('../core/memory.js')
+    autoSummarize(id).catch((err) => {
+      console.warn(`[memory] autoSummarize failed for session ${id}:`, (err as Error).message)
+    })
+
+    // Phase C.1: 自我改进 — 归档后自动生成反思和学习记录
+    const { reflectOnSession } = await import('../core/self-improve.js')
+    reflectOnSession(id).catch((err) => {
+      console.warn(`[self-improve] reflectOnSession failed for session ${id}:`, (err as Error).message)
+    })
+
+    return reply.send({ id, status: 'ARCHIVED' })
   })
 }

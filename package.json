@@ -1,0 +1,17 @@
+{
+  "name": "ai-workbench-v2",
+  "version": "0.3.0-p1",
+  "private": true,
+  "description": "DaShengOS 私有 AI 工作台 · v0.3 spec 完整迁移 (Phase 1+2+3 一起 12-16 周, 老板 2026-06-15 拍板)",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20.11.0 <21.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "clean": "pnpm -r exec rm -rf dist .next .turbo node_modules/.cache"
+  }
+}

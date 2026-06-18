@@ -196,8 +196,10 @@ async def handle_agui_request(body: dict) -> dict:
             logger.info("deerflow started: task=%s query=%r", task_id, query[:60])
 
             # 2. 轮询状态,转 AG-UI 事件
+            # 6/15 老板修: 60s 太短,SiliconFlow 慢时 writer 阶段超过 60s 会拿到 (无报告)
+            #   实测: 3-sub-agent pipeline 35-75s 完成 (writer 24-31s), 给 120s buffer
             events: list[dict] = []
-            deadline = time.time() + 60  # 最多等 60s
+            deadline = time.time() + 120  # 最多等 120s
             while time.time() < deadline:
                 stream = await client.request("research.stream", {"taskId": task_id})
                 new_events = stream.get("result", {}).get("events", [])

@@ -7,7 +7,7 @@
 #   agent.{list,run}                                 1 lead + 5 sub-agents
 #   skill.{load,list}                                skill 加载/列
 #   sandbox.exec                                      代码执行
-#   browser.{navigate,extract}                       浏览器自动化
+#   browser.{navigate,extract,playwright_navigate}    浏览器自动化 (urllib + Playwright)
 #   file.{read,write}                                文件 IO
 #   health.ping                                       健康检查
 #   audit.write                                       写 audit log
@@ -114,20 +114,27 @@ async def research_run(params: dict) -> dict:
     })
     logger.info("research.run task=%s query=%r sub=%s", task_id, query[:60], sub_agents)
 
-    # lead agent 异步跑 (Phase 3 真正实现见 deerflow/agents/lead_agent.py)
-    asyncio.create_task(_run_research_pipeline(task_id))
+    # Smart Dispatcher (Track C.2: 替代旧 hardcoded pipeline)
+    asyncio.create_task(_run_smart_dispatcher(task_id))
 
     return {"taskId": task_id, "status": "started"}
 
 
-async def _run_research_pipeline(task_id: str) -> None:
-    """Lead agent 编排流程: 拆解→并发 5 researcher→writer→quality→完成"""
-    from deerflow.agents.lead_agent import run_research_pipeline
+async def _run_smart_dispatcher(task_id: str) -> None:
+    """Smart Dispatcher: 分类→路由→执行 (替代旧 Lead Agent 硬编码管道)"""
+    from deerflow.agents.dispatcher import get_dispatcher
     try:
-        await run_research_pipeline(task_id, TASKS, TASK_LOCKS)
+        dispatcher = get_dispatcher()
+        await dispatcher.handle(
+            query=TASKS[task_id]["query"],
+            task_id=task_id,
+            tasks=TASKS,
+            locks=TASK_LOCKS,
+        )
     except Exception as e:
-        logger.exception("pipeline failed for %s", task_id)
+        logger.exception("dispatcher failed for %s", task_id)
         TASKS[task_id]["status"] = "error"
+        TASKS[task_id]["error"] = str(e)[:500]
         TASKS[task_id]["error"] = f"{type(e).__name__}: {e}"
         TASKS[task_id]["updated_at"] = int(time.time() * 1000)
 
@@ -258,33 +265,147 @@ async def sandbox_exec(params: dict) -> dict:
     }
 
 
-# ---------- §35.4 browser (浏览器自动化) --------------------
+# ---------- §35.4 browser (浏览器自动化 · Phase 4 真 HTTP 抓取) --------------------
 
 @method("browser.navigate")
 async def browser_navigate(params: dict) -> dict:
-    """浏览器 navigate (Playwright stub · spec §35.4)"""
+    """浏览器 navigate — 用 urllib 抓取网页 HTML (Phase 4 真实现)"""
+    import urllib.request
+    import urllib.error
+
     url = params.get("url")
     if not url:
         raise ValueError("url is required")
-    return {
-        "url": url,
-        "status": "ok",
-        "html": f"<html><body>Browser navigate stub for {url}</body></html>",
-        "screenshot": None,
-        "note": "Playwright integration in P3.10",
-    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 DaShengOS/0.3 (research-agent)",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        loop = asyncio.get_running_loop()
+        resp = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=15))
+        html = resp.read().decode("utf-8", errors="replace")
+        return {
+            "url": url,
+            "status_code": resp.getcode(),
+            "status": "ok",
+            "html": html[:100_000],  # 截断超长页面
+            "html_size": len(html),
+            "note": "Real HTTP fetch (urllib)",
+        }
+    except urllib.error.HTTPError as e:
+        return {"url": url, "status": "error", "error": f"HTTP {e.code}", "note": f"HTTP error: {e.code}"}
+    except Exception as e:
+        return {"url": url, "status": "error", "error": str(e)[:200], "note": "Fetch failed"}
 
 
 @method("browser.extract")
 async def browser_extract(params: dict) -> dict:
-    """抓取网页内容"""
+    """抓取网页并提取文本内容 (Phase 4 真实现)"""
+    import re
+    import urllib.request
+    import urllib.error
+
     url = params.get("url")
     selector = params.get("selector")
-    return {
-        "url": url,
-        "data": {"title": f"Extracted from {url}", "selector": selector},
-        "markdown": f"# Extracted from {url}\n\n(Phase 3 stub)",
-    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 DaShengOS/0.3",
+                "Accept": "text/html",
+            },
+        )
+        loop = asyncio.get_running_loop()
+        resp = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=15))
+        html = resp.read().decode("utf-8", errors="replace")
+
+        # 提取标题
+        title_match = re.search(r"<title>(.*?)</title>", html, re.IGNORECASE)
+        title = title_match.group(1).strip() if title_match else url
+
+        # 简单 HTML→文本 转换
+        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        # 如果指定了 selector，简单关键词过滤
+        if selector:
+            lines = [line for line in text.split(".") if selector.lower() in line.lower()]
+            text = ". ".join(lines[:20])
+
+        return {
+            "url": url,
+            "title": title,
+            "text": text[:20_000],
+            "text_length": len(text),
+            "status_code": resp.getcode(),
+            "note": "Real HTTP fetch + HTML-to-text extraction",
+        }
+    except urllib.error.HTTPError as e:
+        return {"url": url, "status": "error", "error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"url": url, "status": "error", "error": str(e)[:200]}
+
+
+# ---------- §35.4 browser.playwright_navigate (Playwright through backend API) --------
+
+@method("browser.playwright_navigate")
+async def browser_playwright_navigate(params: dict) -> dict:
+    """浏览器 playwright_navigate — 调 Node.js backend 的 /api/v1/browser/navigate
+    用于需要 JS 渲染的页面 (vs 纯 HTTP urllib)
+    """
+    import urllib.request
+    import urllib.error
+
+    url = params.get("url")
+    if not url:
+        raise ValueError("url is required")
+
+    backend_url = os.environ.get("DASHENG_BACKEND_URL", "http://127.0.0.1:8000/api/v1/browser/navigate")
+    backend_token = os.environ.get("DASHENG_SERVICE_TOKEN", "")
+
+    try:
+        payload = json.dumps({
+            "url": url,
+            "cookies": params.get("cookies"),
+            "waitFor": params.get("waitFor"),
+            "timeout": params.get("timeout", 30000),
+            "autoInjectSocial": params.get("autoInjectSocial", False),
+        }).encode()
+
+        req = urllib.request.Request(
+            backend_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {backend_token}",
+            },
+            method="POST",
+        )
+        loop = asyncio.get_running_loop()
+        resp = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=60))
+        data = json.loads(resp.read().decode("utf-8"))
+        return {"status": "ok", **data}
+    except urllib.error.HTTPError as e:
+        return {
+            "url": url,
+            "status": "error",
+            "error": f"Backend HTTP {e.code}",
+            "note": f"Backend browser API returned {e.code}",
+        }
+    except Exception as e:
+        return {
+            "url": url,
+            "status": "error",
+            "error": str(e)[:200],
+            "note": "Backend browser API unreachable or Playwright not installed",
+        }
 
 
 # ---------- §35.4 file (读/写) -------------------------------

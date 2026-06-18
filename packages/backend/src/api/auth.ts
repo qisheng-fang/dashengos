@@ -22,8 +22,9 @@ const RefreshSchema = z.object({
 const ForceLogoutSchema = z.object({ user_id: z.string() })
 
 // Phase C.1 (2026-06-16) login lockout constants
-const LOGIN_MAX_ATTEMPTS = 5
-const LOGIN_WINDOW_MS = 15 * 60 * 1000
+// D5 (2026-06-18): 阈值降到 3, 窗口缩到 60s, 因为 dev 环境 backend 重启时 WAL snapshot 残留老 attempts
+const LOGIN_MAX_ATTEMPTS = 3
+const LOGIN_WINDOW_MS = 60_000
 
 // 查 IP 在 15min 内的失败次数, 决定是否锁定
 function isIpLocked(ip: string, now: number): { locked: boolean; retryAfterSec: number; failedCount: number } {
@@ -35,6 +36,12 @@ function isIpLocked(ip: string, now: number): { locked: boolean; retryAfterSec: 
        ORDER BY attempt_at ASC`,
     )
     .all(ip, windowStart) as Array<{ attempt_at: number }>
+  // D5 debug (2026-06-18): 验证 login_attempts 实际值
+  if (process.env.DASHENG_DB_DEBUG) {
+    const all = sqlite.prepare('SELECT * FROM login_attempts').all() as Array<unknown>
+    // eslint-disable-next-line no-console
+    console.log(`[auth] isIpLocked(${ip}) rows=${rows.length} total_in_table=${all.length} windowStart=${windowStart}`)
+  }
   if (rows.length < LOGIN_MAX_ATTEMPTS) {
     return { locked: false, retryAfterSec: 0, failedCount: rows.length }
   }
@@ -65,20 +72,23 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { username, password } = parsed.data
 
-    // Phase C.1: 先看 IP 是否锁定 (5 fail/15min 触发)
+    // Phase C.1: IP 锁定 (dev 默认 3 fail/60s, DASHENG_LOGIN_LOCKOUT=false 可禁用)
     const now = Date.now()
     const ip = req.ip || 'unknown'
-    const lock = isIpLocked(ip, now)
-    if (lock.locked) {
-      metrics.authLogin.inc({ result: 'locked' })
-      return reply
-        .code(429)
-        .header('Retry-After', String(lock.retryAfterSec))
-        .send({
-          code: 'TOO_MANY_LOGIN_ATTEMPTS',
-          message: `账户临时锁定, ${lock.retryAfterSec}s 后重试`,
-          retry_after_sec: lock.retryAfterSec,
-        })
+    const lockEnabled = process.env.DASHENG_LOGIN_LOCKOUT !== 'false'
+    if (lockEnabled) {
+      const lock = isIpLocked(ip, now)
+      if (lock.locked) {
+        metrics.authLogin.inc({ result: 'locked' })
+        return reply
+          .code(429)
+          .header('Retry-After', String(lock.retryAfterSec))
+          .send({
+            code: 'TOO_MANY_LOGIN_ATTEMPTS',
+            message: `账户临时锁定, ${lock.retryAfterSec}s 后重试`,
+            retry_after_sec: lock.retryAfterSec,
+          })
+      }
     }
 
     const user = sqlite

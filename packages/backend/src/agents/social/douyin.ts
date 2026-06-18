@@ -1,8 +1,10 @@
 // packages/backend/src/agents/social/douyin.ts · Track B (2026-06-15)
 // 抖音运营 Agent — 趋势爬取 / 视频生成 / 发布 / 数据回采
 // 工具链: douyin-bridge :9112 + pixelle-bridge :9108 + sau-bridge :9109
+// Phase 4 (2026-06-17): generate_video 加 LLM 脚本生成
 
 import { SocialAgent, type SocialToolDef } from './index.js'
+import { generateDouyinScript } from './llm-helper.js'
 
 export class DouyinAgent extends SocialAgent {
   readonly id = 'DouyinAgent'
@@ -70,11 +72,19 @@ export class DouyinAgent extends SocialAgent {
   }
 
   protected async tool_generate_video(params: Record<string, unknown>) {
-    return await this.worker.pixelleGenerateVideo({
-      topic: String(params.topic || ''),
+    const topic = String(params.topic || '')
+    // Phase 4: 用 LLM 生成视频脚本
+    const script = topic ? await generateDouyinScript(topic) : null
+    const result = await this.worker.pixelleGenerateVideo({
+      topic,
       duration: params.duration as number | undefined,
       style: params.style as string | undefined,
     })
+    return {
+      ...result,
+      script: script?.is_real ? script.text : undefined,
+      script_source: script?.is_real ? 'LLM (SiliconFlow)' : script ? 'fallback' : 'no_topic',
+    }
   }
 
   protected async tool_publish_video(params: Record<string, unknown>) {

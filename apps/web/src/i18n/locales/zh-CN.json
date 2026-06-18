@@ -1,0 +1,121 @@
+{
+  "common": {
+    "app": "DaShengOS",
+    "loading": "加载中…",
+    "error": "出错了",
+    "retry": "重试",
+    "cancel": "取消",
+    "confirm": "确认",
+    "save": "保存",
+    "delete": "删除",
+    "edit": "编辑",
+    "search": "搜索",
+    "back": "返回",
+    "next": "下一步",
+    "close": "关闭",
+    "send": "发送",
+    "settings": "设置",
+    "logout": "退出"
+  },
+  "auth": {
+    "login": "登录",
+    "logout": "退出",
+    "register": "注册",
+    "email": "邮箱",
+    "password": "密码",
+    "rememberMe": "记住我",
+    "forgotPassword": "忘记密码?",
+    "noAccount": "没有账号?",
+    "signUp": "立即注册",
+    "successLogin": "登录成功",
+    "failedLogin": "登录失败, 请重试"
+  },
+  "workspace": {
+    "title": "工作台",
+    "welcome": "老板, 你好 👋",
+    "quickStart": "快速启动",
+    "recentSessions": "最近会话",
+    "newSession": "新会话",
+    "emptyHint": "还没有会话, 开始第一次对话吧"
+  },
+  "chat": {
+    "title": "对话",
+    "input": "输入消息…",
+    "send": "发送",
+    "attach": "附件",
+    "model": "模型",
+    "agent": "Agent",
+    "stop": "停止",
+    "regenerate": "重新生成",
+    "copy": "复制",
+    "edit": "编辑",
+    "branch": "从这里分支"
+  },
+  "agent": {
+    "title": "Agent 市场",
+    "installed": "已安装",
+    "install": "安装",
+    "uninstall": "卸载",
+    "category": "分类",
+    "rating": "评分",
+    "usage": "使用量",
+    "search": "搜索 Agent…"
+  },
+  "skill": {
+    "title": "Skill 详情",
+    "install": "安装此 Skill",
+    "testInAgent": "在 Agent 中测试",
+    "report": "举报",
+    "version": "版本",
+    "author": "作者",
+    "verified": "已验证",
+    "dependencies": "依赖",
+    "permissions": "权限"
+  },
+  "mcp": {
+    "title": "MCP 服务器",
+    "add": "添加 Server",
+    "fromMarket": "从市场导入",
+    "running": "运行中",
+    "stopped": "已停止",
+    "error": "错误",
+    "tools": "工具"
+  },
+  "files": {
+    "title": "文件浏览器",
+    "upload": "上传",
+    "newFolder": "新建文件夹",
+    "share": "分享给 Agent",
+    "rename": "重命名"
+  },
+  "settings": {
+    "title": "设置",
+    "profile": "个人资料",
+    "models": "模型路由",
+    "apiKeys": "API Key",
+    "sandbox": "沙箱配额",
+    "audit": "审计日志",
+    "advanced": "高级",
+    "language": "语言",
+    "theme": "主题"
+  },
+  "error": {
+    "404": "页面走丢了 🦝",
+    "404Hint": "你想找的页面不在这里",
+    "500": "服务器开小差了",
+    "503": "服务暂不可用",
+    "goHome": "回首页",
+    "report": "反馈问题"
+  },
+  "command": {
+    "placeholder": "搜索或输入命令…",
+    "empty": "未找到结果",
+    "groups": {
+      "session": "会话",
+      "agent": "Agent",
+      "skill": "Skill",
+      "settings": "设置",
+      "nav": "导航"
+    }
+  }
+}

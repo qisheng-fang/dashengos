@@ -18,7 +18,7 @@ import type {
   AgentInfo,
 } from './sandbox-types'
 import { useAuthStore } from './auth-store'
-import { http, ApiError, invokeTool, type InvokeToolOptions } from './api'
+import { invokeTool, type InvokeToolOptions } from './api'
 
 // 兼容旧 caller · 传 baseUrl + token (token 仍必填, 默认从 auth-store 读)
 export interface SandboxClientOptions {
@@ -50,15 +50,8 @@ interface InvokeResponse {
 }
 
 export class SandboxClient {
-  private baseUrl?: string
-  private token: string
-
-  constructor(opts: SandboxClientOptions) {
-    if (!opts.token) {
-      throw new Error('SandboxClient: token 必填 (Phase B.3 JWT 强制)')
-    }
-    this.baseUrl = opts.baseUrl
-    this.token = opts.token
+  constructor(_opts: SandboxClientOptions) {
+    // Phase F: invokeTool 已内置 auth + baseUrl 处理，无需手动存 token/baseUrl
   }
 
   /**

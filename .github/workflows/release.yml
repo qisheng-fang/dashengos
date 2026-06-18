@@ -1,0 +1,192 @@
+# .github/workflows/release.yml · v0.3 Phase 5+
+#
+# On push to main:
+#   1. Build the sandbox distroless Docker image (multi-arch: amd64 + arm64)
+#   2. Build the backend image (Node 20 alpine)
+#   3. Build the web image (Vite static + nginx)
+#   4. Push to GitHub Container Registry (ghcr.io)
+#   5. (Optional) deploy to staging kind cluster via kubectl
+#
+# Image tags:
+#   - :main (latest on main)
+#   - :sha-<7-char> (immutable per commit)
+#   - :v0.3.0-phase5 (version tag, manually pushed)
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch: {}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
+jobs:
+  # ===========================================================================
+  # Build & push sandbox image (Go + distroless, multi-arch)
+  # ===========================================================================
+  sandbox:
+    name: Sandbox image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/sandbox
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=v0.3.0-phase5,enable={{is_default_branch}}
+      - name: Build + push
+        uses: docker/build-push-action@v5
+        with:
+          context: sandbox
+          file: sandbox/deploy/Dockerfile.distroless
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # The Dockerfile uses external base images; needs to be online
+
+  # ===========================================================================
+  # Build & push backend image (Node 20 alpine)
+  # ===========================================================================
+  backend:
+    name: Backend image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Build
+        working-directory: packages/backend
+        run: pnpm build
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=v0.3.0-phase5,enable={{is_default_branch}}
+      - name: Build + push
+        uses: docker/build-push-action@v5
+        with:
+          context: packages/backend
+          file: packages/backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # Build & push web image (nginx:alpine serving dist/)
+  # ===========================================================================
+  web:
+    name: Web image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Build
+        working-directory: apps/web
+        run: pnpm build
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/web
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=v0.3.0-phase5,enable={{is_default_branch}}
+      - name: Build + push
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/web
+          file: apps/web/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # Deploy to staging kind cluster
+  # ===========================================================================
+  deploy-staging:
+    name: Deploy · staging
+    runs-on: ubuntu-latest
+    needs: [sandbox, backend, web]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.STAGING_KUBECONFIG }}" > $HOME/.kube/config
+      - name: Apply sandbox manifests
+        run: kubectl apply -f sandbox/deploy/k8s/
+      - name: Apply backend manifests
+        run: kubectl apply -f packages/backend/deploy/k8s/
+      - name: Apply web manifests
+        run: kubectl apply -f apps/web/deploy/k8s/
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/sandbox -n dasheng --timeout=120s
+      - name: Smoke test
+        run: |
+          sleep 10
+          curl -sf http://sandbox.dasheng.svc.cluster.local:9100/healthz && echo "OK"

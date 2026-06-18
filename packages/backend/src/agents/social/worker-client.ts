@@ -7,6 +7,8 @@
 
 import { config } from '../../config.js'
 
+export type CookieResolver = (platform: string, userId?: string) => Promise<string | null>
+
 export interface WorkerHealth {
   ok: boolean
   service: string
@@ -74,8 +76,12 @@ async function workerFetch(
 
 /**
  * Social Worker Client — 单例, 调旧 DaShengOS 5 个 worker
+ * Track B.1 (2026-06-17): 支持 Cookie 解析器, 自动注入用户存储的社媒 cookie
  */
 export class SocialWorkerClient {
+  private cookieResolver: CookieResolver | null = null
+  private currentUserId: string | null = null
+
   constructor(
     public readonly sauUrl: string = config.SAU_BRIDGE_URL,
     public readonly douyinUrl: string = config.DOUYIN_BRIDGE_URL,
@@ -83,6 +89,26 @@ export class SocialWorkerClient {
     public readonly videoParserUrl: string = config.VIDEO_PARSER_URL,
     public readonly pixelleUrl: string = config.PIXELLE_BRIDGE_URL,
   ) {}
+
+  /** 注入 cookie 解析器 (从 DB 查加密 cookie 并解密) */
+  setCookieResolver(resolver: CookieResolver) {
+    this.cookieResolver = resolver
+  }
+
+  /** 设置当前操作的用户 ID */
+  setUserId(userId: string | null) {
+    this.currentUserId = userId
+  }
+
+  /** 查当前用户的平台 cookie */
+  private async resolveCookie(platform: string): Promise<string | null> {
+    if (!this.cookieResolver || !this.currentUserId) return null
+    try {
+      return await this.cookieResolver(platform, this.currentUserId)
+    } catch {
+      return null
+    }
+  }
 
   // ===== Health =====
   async healthAll(): Promise<Record<string, WorkerHealth>> {
@@ -140,17 +166,20 @@ export class SocialWorkerClient {
 
   // ===== Douyin: douyin-bridge :9112 =====
   async douyinParseVideo(url: string, cookie?: string): Promise<unknown> {
+    // Track B.1: 自动从 DB 解析 cookie
+    const effectiveCookie = cookie ?? (await this.resolveCookie('douyin')) ?? undefined
     return workerFetch(`${this.douyinUrl}/parse/video`, {
       method: 'POST',
-      body: { platform: 'douyin', url, cookie },
+      body: { platform: 'douyin', url, cookie: effectiveCookie },
       timeoutMs: 30_000,
     })
   }
 
   async douyinParseUser(sec_uid: string): Promise<unknown> {
+    const cookie = await this.resolveCookie('douyin')
     return workerFetch(`${this.douyinUrl}/parse/user`, {
       method: 'POST',
-      body: { platform: 'douyin', sec_uid },
+      body: { platform: 'douyin', sec_uid, cookie: cookie ?? undefined },
       timeoutMs: 30_000,
     })
   }

@@ -1,0 +1,161 @@
+# apps/backend/configs/deerflow.yaml
+# DeerFlow 2.0 锁版 v2.0.0-rc2
+# https://github.com/bytedance/deer-flow
+# v0.3 spec §36.1 完整模板
+
+version: v2.0.0-rc2
+
+# ---- 全局配置 ----
+global:
+  llm:
+    # Lead agent 默认用 Claude-Sonnet-4
+    # sub-agents 默认用更便宜的 GPT-4o-mini
+    default_provider: anthropic
+    default_model: claude-sonnet-4-20250514
+    sub_agent_provider: openai
+    sub_agent_model: gpt-4o-mini
+    # 凭据从 Keychain 读 (§35.6)
+    api_key_source: keychain
+  sandbox:
+    # 嵌入模式:直接用 backend 同 pod 的 Docker daemon
+    runtime: docker
+    default_image: dasheng-shell:0.1
+    default_cpu: 0.5
+    default_mem: 512M
+    default_timeout_ms: 60000
+  observability:
+    # LangFuse 兼容协议
+    langfuse:
+      enabled: true
+      endpoint: ${LANGFUSE_ENDPOINT:-http://127.0.0.1:3000}
+      public_key_source: keychain
+      secret_key_source: keychain
+    # 同步到 DaShengOS 审计
+    dasheng_audit:
+      enabled: true
+      endpoint: unix:///var/run/dasheng/deerflow.sock
+      method: audit.write
+
+# ---- Lead agent · 任务分发 + 汇总 ----
+lead_agent:
+  name: orchestrator
+  description: |
+    Lead agent that decomposes user query, delegates to sub-agents,
+    and synthesizes results into a final answer.
+  system_prompt: |
+    你是 DaShengOS 的多智能体编排器(DeerFlow 2.0)。
+    工作流程:
+    1. 理解用户意图,拆解为 1-5 个子任务
+    2. 选择合适的 sub-agent(researcher / analyst / writer / security_reviewer / quality_reviewer)
+    3. 并发调用 sub-agent(最多 3 个并发)
+    4. 收集结果,识别冲突/重复
+    5. 交给 writer 生成最终答复
+    6. 交给 quality_reviewer 检查
+    7. 返回给用户
+
+    输出格式:
+    - 简洁、可执行、带数据来源
+    - 中文为主,英文术语保留
+    - 引用必须标 [n] 脚注
+  tools:
+    - delegate_to_researcher
+    - delegate_to_analyst
+    - delegate_to_writer
+    - delegate_to_security_reviewer
+    - delegate_to_quality_reviewer
+  max_steps: 30
+  temperature: 0.3
+
+# ---- Sub-agents · 5 个 ----
+sub_agents:
+  - name: researcher
+    description: 行业调研 / 信息搜集 / 多源验证
+    system_prompt: |
+      你是 Researcher agent。任务:
+      1. 用 web_search 找 3-5 个权威来源
+      2. 用 browser_extract 抓取关键内容
+      3. 交叉验证(至少 2 个来源)
+      4. 输出结构化 findings(每条含来源 URL)
+    tools:
+      - web_search
+      - browser_navigate
+      - browser_extract
+      - file_read
+    max_steps: 15
+    temperature: 0.2
+
+  - name: analyst
+    description: 数据分析 / 模式识别 / 统计推断
+    system_prompt: |
+      你是 Analyst agent。任务:
+      1. 接收数据(CSV / JSON / SQL 结果)
+      2. 跑统计 / 画图(Python sandbox)
+      3. 识别趋势 / 异常 / 相关性
+      4. 输出数据 + 可视化 + 解读
+    tools:
+      - sandbox_exec_python
+      - file_read
+      - file_write
+    max_steps: 20
+    temperature: 0.1
+
+  - name: writer
+    description: 长文 / 报告 / 文案 / 翻译
+    system_prompt: |
+      你是 Writer agent。任务:
+      1. 接收所有上游 findings
+      2. 整合成一篇结构化文档
+      3. 风格:清晰 / 简洁 / 准确
+      4. 长度:根据用户问题自适应
+    tools:
+      - file_read
+      - file_write
+    max_steps: 10
+    temperature: 0.7
+
+  - name: security_reviewer
+    description: 代码审计 / 漏洞扫描 / 合规检查
+    system_prompt: |
+      你是 Security Reviewer agent。任务:
+      1. 审查代码 / 配置 / 文档
+      2. 用 STRIDE / OWASP 思维
+      3. 输出风险评级 + 修复建议
+    tools:
+      - file_read
+      - sandbox_exec_shell
+      - web_search
+    max_steps: 15
+    temperature: 0.1
+
+  - name: quality_reviewer
+    description: 质量审查 / 逻辑校验 / 错误发现
+    system_prompt: |
+      你是 Quality Reviewer agent。任务:
+      1. 检查事实准确性(数据 / 引用 / 数字)
+      2. 检查逻辑一致性
+      3. 检查输出是否回答了用户问题
+      4. 输出:pass / fail + 改进建议
+    tools:
+      - file_read
+      - web_search
+    max_steps: 10
+    temperature: 0.2
+
+# ---- Skills 加载(自动扫描)----
+skills:
+  auto_load:
+    - name: web-search
+      from: builtin
+    - name: code-exec-python
+      from: builtin
+    - name: tavily
+      from: marketplace
+      config:
+        max_results: 10
+  custom_skills_dir: /opt/dasheng/skills
+
+# ---- MCP servers(从 DaShengOS registry 拉)----
+mcp:
+  source: dasheng_registry
+  endpoint: http://127.0.0.1:8000/api/v1/mcp/servers
+  trust_level_filter: trusted

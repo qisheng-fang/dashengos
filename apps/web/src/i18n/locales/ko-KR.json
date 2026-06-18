@@ -1,0 +1,52 @@
+{
+  "common": {
+    "app": "DaShengOS",
+    "loading": "로딩 중…",
+    "error": "오류가 발생했습니다",
+    "retry": "재시도",
+    "cancel": "취소",
+    "confirm": "확인",
+    "save": "저장",
+    "delete": "삭제",
+    "edit": "편집",
+    "search": "검색",
+    "back": "뒤로",
+    "send": "보내기",
+    "settings": "설정",
+    "logout": "로그아웃"
+  },
+  "auth": {
+    "login": "로그인",
+    "logout": "로그아웃",
+    "register": "가입",
+    "email": "이메일",
+    "password": "비밀번호",
+    "forgotPassword": "비밀번호를 잊으셨나요?",
+    "successLogin": "로그인됨",
+    "failedLogin": "로그인 실패, 다시 시도하세요"
+  },
+  "workspace": {
+    "title": "워크스페이스",
+    "welcome": "안녕하세요, 보스 👋",
+    "quickStart": "빠른 시작",
+    "recentSessions": "최근 세션",
+    "newSession": "새 세션"
+  },
+  "chat": {
+    "title": "채팅",
+    "input": "메시지 입력…",
+    "send": "보내기",
+    "model": "모델",
+    "stop": "중지"
+  },
+  "error": {
+    "404": "페이지를 찾을 수 없습니다 🦝",
+    "404Hint": "찾고 계신 페이지가 여기에 없습니다",
+    "goHome": "홈으로",
+    "report": "문제 보고"
+  },
+  "command": {
+    "placeholder": "검색 또는 명령 입력…",
+    "empty": "결과 없음"
+  }
+}

@@ -8,6 +8,7 @@ import { Buffer } from 'node:buffer'
 import { z } from 'zod'
 import { sqlite } from '../storage/db.js'
 import { config } from '../config.js'
+import { isRedisConnected, ping as redisPing } from '../cache/redis.js'
 
 // Phase 10: /tools 返 23 sandbox IPC + /tools/:id/invoke 真接 sandbox via unix socket
 // Sandbox IPC 走 JSON-RPC 2.0 over unix socket (/tmp/dasheng/sandbox.sock)
@@ -298,7 +299,7 @@ export async function modelRoutes(app: FastifyInstance) {
           signal: AbortSignal.timeout(300_000),
         })
         if (!res.ok) {
-          const errText = await res.text().catch(() => '')
+          await res.text().catch(() => '')
           return reply.code(502).send({ code: 'OLLAMA_UPSTREAM_FAILED', status: res.status, message: sanitizeUpstreamError() })
         }
         const json = (await res.json()) as {
@@ -353,7 +354,7 @@ export async function modelRoutes(app: FastifyInstance) {
           signal: AbortSignal.timeout(config.SILICONFLOW_TIMEOUT_SEC * 1000),
         })
         if (!res.ok) {
-          const errText = await res.text().catch(() => '')
+          await res.text().catch(() => '')
           return reply.code(502).send({
             code: 'SILICONFLOW_UPSTREAM_FAILED',
             status: res.status,
@@ -411,7 +412,7 @@ export async function modelRoutes(app: FastifyInstance) {
           signal: AbortSignal.timeout(config.SILICONFLOW_TIMEOUT_SEC * 1000),
         })
         if (!res.ok) {
-          const errText = await res.text().catch(() => '')
+          await res.text().catch(() => '')
           return reply.code(502).send({
             code: 'DEEPSEEK_UPSTREAM_FAILED',
             status: res.status,
@@ -623,7 +624,7 @@ export async function settingsRoutes(app: FastifyInstance) {
 
   // PUT /api/v1/settings/provider/:id — 存 API key (text, 不加密 — Phase D 加 SQLCipher)
   app.put('/provider/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
-    const idParse = ProviderIdSchema.safeParse(req.params.id)
+    const idParse = ProviderIdSchema.safeParse((req.params as Record<string, string>).id)
     if (!idParse.success) {
       return reply.code(400).send({ code: 'VALIDATION_FAILED', message: 'unknown provider' })
     }
@@ -648,7 +649,7 @@ export async function settingsRoutes(app: FastifyInstance) {
 
   // DELETE /api/v1/settings/provider/:id — 清 key
   app.delete('/provider/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
-    const idParse = ProviderIdSchema.safeParse(req.params.id)
+    const idParse = ProviderIdSchema.safeParse((req.params as Record<string, string>).id)
     if (!idParse.success) {
       return reply.code(400).send({ code: 'VALIDATION_FAILED', message: 'unknown provider' })
     }
@@ -679,7 +680,7 @@ export async function settingsRoutes(app: FastifyInstance) {
 
   // POST /api/v1/settings/provider/:id/test — 真测连通 (用 user key 或 fallback env)
   app.post('/provider/:id/test', { preHandler: [app.authenticate] }, async (req, reply) => {
-    const idParse = ProviderIdSchema.safeParse(req.params.id)
+    const idParse = ProviderIdSchema.safeParse((req.params as Record<string, string>).id)
     if (!idParse.success) {
       return reply.code(400).send({ code: 'VALIDATION_FAILED', message: 'unknown provider' })
     }
@@ -715,14 +716,48 @@ export async function settingsRoutes(app: FastifyInstance) {
 // ====================================================================
 export async function systemRoutes(app: FastifyInstance) {
   app.get('/status', async (_req, reply) => {
+    // Phase 2 (2026-06-17): 深层健康检查 — DB ping + Redis ping
+    let dbOk = false
+    try {
+      sqlite.prepare('SELECT 1').get()
+      dbOk = true
+    } catch { /* noop */ }
+
+    const redisOk = isRedisConnected() ? await redisPing() : null
+
+    const allOk = dbOk && (redisOk === null || redisOk === true)
+
     return reply.send({
-      status: 'ok',
+      status: allOk ? 'ok' : 'degraded',
       version: '0.3.0-p2',
       uptime_sec: Math.floor(process.uptime()),
+      checks: {
+        database: dbOk ? 'ok' : 'fail',
+        redis: redisOk === null ? 'not_configured' : redisOk ? 'ok' : 'fail',
+      },
     })
   })
   app.get('/health', async (_req, reply) => {
-    return reply.send({ status: 'ok' })
+    // Phase 2 (2026-06-17): 深层健康检查
+    let dbOk = false
+    try {
+      sqlite.prepare('SELECT 1').get()
+      dbOk = true
+    } catch { /* noop */ }
+
+    const redisOk = isRedisConnected() ? await redisPing() : null
+
+    const allOk = dbOk && (redisOk === null || redisOk === true)
+    const code = allOk ? 200 : 503
+
+    return reply.status(code).send({
+      status: allOk ? 'ok' : 'degraded',
+      checks: {
+        database: dbOk ? 'ok' : 'fail',
+        redis: redisOk === null ? 'not_configured' : redisOk ? 'ok' : 'fail',
+      },
+      uptime_sec: Math.floor(process.uptime()),
+    })
   })
   app.get('/version', async (_req, reply) => {
     return reply.send({

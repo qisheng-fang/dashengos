@@ -1,8 +1,10 @@
 // packages/backend/src/agents/social/xiaohongshu.ts · Track B (2026-06-15)
 // 小红书运营 Agent — 趋势 / 图文笔记 / 种草发布
 // 工具链: video-parser-bridge :9111 (trending) + sau-bridge :9109 (xiaohongshu uploader)
+// Phase 4 (2026-06-17): generate_xhs_note 接 SiliconFlow LLM 生成真实内容
 
 import { SocialAgent, type SocialToolDef } from './index.js'
+import { generateXiaohongshuNote } from './llm-helper.js'
 
 export class XiaohongshuAgent extends SocialAgent {
   readonly id = 'XiaohongshuAgent'
@@ -59,25 +61,15 @@ export class XiaohongshuAgent extends SocialAgent {
   protected async tool_generate_xhs_note(params: Record<string, unknown>) {
     const topic = String(params.topic || '种草')
     const tone = String(params.tone || '种草/分享')
-    // LLM 不可用时返结构化模板 (Track A 等 key 接入后真生成)
-    const content = `💫 姐妹们！今天必须分享这个超棒发现！
-
-#${topic}
-
-✨ 简约不简单, 精致每一刻
-💕 真实使用体验分享
-📌 适合追求品质生活的你
-
-.
-.
-.（自动种草中）`
+    const result = await generateXiaohongshuNote(topic)
     return {
-      is_real: false,
-      content,
+      is_real: result.is_real,
+      content: result.text,
       topic,
       tone,
-      character_count: content.length,
-      note: '真实生成需 LLM key 接入 (Track A 阻塞中)',
+      character_count: result.text.length,
+      model: result.model,
+      note: result.is_real ? 'LLM 生成 (SiliconFlow)' : '降级模板 (请配 SILICONFLOW_API_KEY)',
     }
   }
 

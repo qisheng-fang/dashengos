@@ -1,0 +1,7 @@
+# pnpm-workspace.yaml · v0.3 spec §15 monorepo
+# Phase 1 起 apps/web; Phase 2+ 加 packages/{backend,shared,sandbox}, apps/{desktop,cli}, mcp_servers/, skills/
+
+packages:
+  - 'apps/*'
+  - 'packages/*'
+  - 'mcp_servers/*'

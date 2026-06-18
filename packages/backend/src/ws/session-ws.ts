@@ -58,7 +58,6 @@ export async function sessionWSS(app: FastifyInstance) {
     connection.socket.send(JSON.stringify({ type: 'auth_required', session_id: id }))
 
     let authenticated = false
-    let authedUserId: string | null = null
     const authTimer = setTimeout(() => {
       if (!authenticated) {
         connection.socket.send(JSON.stringify({ type: 'error', code: 'AUTH_TIMEOUT' }))
@@ -108,7 +107,6 @@ export async function sessionWSS(app: FastifyInstance) {
         }
         // 通过
         authenticated = true
-        authedUserId = payload.sub
         clearTimeout(authTimer)
         connection.socket.send(
           JSON.stringify({ type: 'auth_ok', user_id: payload.sub, session_id: id }),

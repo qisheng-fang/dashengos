@@ -1,0 +1,46 @@
+# docker/Dockerfile.backend · v0.3 Phase 5 (2026-06-17) — 修复路径 + 加 deerflow
+# Stage 1: backend (Node.js + TypeScript, packages/backend/)
+# Stage 2: deerflow (Python 3.12, deerflow/)
+# Final:   supervisord 拉 2 进程 (backend :8000 + deerflow daemon)
+
+# ---- Stage 1: TypeScript backend ----
+FROM node:20-alpine AS base
+WORKDIR /repo
+RUN corepack enable && corepack prepare pnpm@9 --activate
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
+COPY packages/backend/package.json ./packages/backend/
+# deerflow 是 Python 包, 无 package.json — 跳过
+RUN pnpm install --frozen-lockfile --filter ./packages/backend...
+COPY packages/backend ./packages/backend
+RUN pnpm --filter @dasheng/backend build
+
+# ---- Stage 2: DeerFlow 2.0 (Python 3.12 + pip) ----
+FROM python:3.12-slim AS deerflow
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libffi-dev git curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir openai>=1.0,<2.0
+WORKDIR /opt/deerflow
+COPY deerflow/ ./
+
+# ---- Final: 合并 backend + deerflow, supervisord 拉两个进程 ----
+FROM node:20-alpine AS final
+RUN apk add --no-cache supervisor python3 py3-pip py3-virtualenv
+WORKDIR /app
+# 从 base stage 拷 backend build
+COPY --from=base /repo/packages/backend /app/packages/backend
+COPY --from=base /repo/packages/backend/dist /app/packages/backend/dist
+COPY --from=base /repo/packages/backend/package.json /app/packages/backend/
+COPY --from=base /repo/packages/backend/node_modules /app/packages/backend/node_modules
+# 从 deerflow stage 拷 daemon + deps
+COPY --from=deerflow /opt/deerflow /opt/deerflow
+COPY --from=deerflow /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+# supervisord config + start script
+COPY docker/supervisord.conf /etc/supervisord.conf
+COPY docker/start-deerflow.sh /usr/local/bin/start-deerflow
+RUN chmod +x /usr/local/bin/start-deerflow
+# Phase 5: 健康检查 — backend HTTP + deerflow socket 存在
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget -q --spider http://127.0.0.1:8000/api/v1/system/health || exit 1
+EXPOSE 8000
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]

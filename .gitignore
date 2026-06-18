@@ -1,0 +1,42 @@
+# Day 0 骨架 · .gitignore (项目根)
+# ⚠️ P0 阶段 git 还没 init, 提前写好以备 P1 启用
+
+# === Vendors (克隆的源码, 大文件, 不入 git) ===
+vendors/
+
+# === Logs ===
+.logs/
+*.log
+logs/
+
+# === Node.js ===
+**/node_modules/
+**/.next/
+**/out/
+**/dist/
+
+# === Python ===
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+
+# === IDE / OS ===
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# === Local env ===
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# === pnpm ===
+.pnpm-store/
+
+# === Generated reports ===
+health-check-report-*.html

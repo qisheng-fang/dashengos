@@ -1,0 +1,121 @@
+{
+  "common": {
+    "app": "DaShengOS",
+    "loading": "Loading…",
+    "error": "Something went wrong",
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "search": "Search",
+    "back": "Back",
+    "next": "Next",
+    "close": "Close",
+    "send": "Send",
+    "settings": "Settings",
+    "logout": "Logout"
+  },
+  "auth": {
+    "login": "Sign in",
+    "logout": "Sign out",
+    "register": "Sign up",
+    "email": "Email",
+    "password": "Password",
+    "rememberMe": "Remember me",
+    "forgotPassword": "Forgot password?",
+    "noAccount": "No account?",
+    "signUp": "Sign up",
+    "successLogin": "Logged in",
+    "failedLogin": "Login failed, please try again"
+  },
+  "workspace": {
+    "title": "Workspace",
+    "welcome": "Hello, boss 👋",
+    "quickStart": "Quick start",
+    "recentSessions": "Recent sessions",
+    "newSession": "New session",
+    "emptyHint": "No sessions yet, start your first conversation"
+  },
+  "chat": {
+    "title": "Chat",
+    "input": "Type a message…",
+    "send": "Send",
+    "attach": "Attach",
+    "model": "Model",
+    "agent": "Agent",
+    "stop": "Stop",
+    "regenerate": "Regenerate",
+    "copy": "Copy",
+    "edit": "Edit",
+    "branch": "Branch from here"
+  },
+  "agent": {
+    "title": "Agent Marketplace",
+    "installed": "Installed",
+    "install": "Install",
+    "uninstall": "Uninstall",
+    "category": "Category",
+    "rating": "Rating",
+    "usage": "Usage",
+    "search": "Search agents…"
+  },
+  "skill": {
+    "title": "Skill Detail",
+    "install": "Install this Skill",
+    "testInAgent": "Test in Agent",
+    "report": "Report",
+    "version": "Version",
+    "author": "Author",
+    "verified": "Verified",
+    "dependencies": "Dependencies",
+    "permissions": "Permissions"
+  },
+  "mcp": {
+    "title": "MCP Servers",
+    "add": "Add Server",
+    "fromMarket": "Import from Marketplace",
+    "running": "Running",
+    "stopped": "Stopped",
+    "error": "Error",
+    "tools": "Tools"
+  },
+  "files": {
+    "title": "File Browser",
+    "upload": "Upload",
+    "newFolder": "New Folder",
+    "share": "Share to Agent",
+    "rename": "Rename"
+  },
+  "settings": {
+    "title": "Settings",
+    "profile": "Profile",
+    "models": "Model Routing",
+    "apiKeys": "API Keys",
+    "sandbox": "Sandbox Quotas",
+    "audit": "Audit Logs",
+    "advanced": "Advanced",
+    "language": "Language",
+    "theme": "Theme"
+  },
+  "error": {
+    "404": "Page not found 🦝",
+    "404Hint": "The page you're looking for isn't here",
+    "500": "Server error",
+    "503": "Service unavailable",
+    "goHome": "Go home",
+    "report": "Report issue"
+  },
+  "command": {
+    "placeholder": "Search or type a command…",
+    "empty": "No results",
+    "groups": {
+      "session": "Session",
+      "agent": "Agent",
+      "skill": "Skill",
+      "settings": "Settings",
+      "nav": "Navigation"
+    }
+  }
+}
