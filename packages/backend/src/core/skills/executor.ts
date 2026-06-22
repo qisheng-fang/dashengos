@@ -22,6 +22,8 @@ export interface SkillStep {
   description: string;
   content: string;  // 命令、API 调用、或说明文字
   risky: boolean;  // 是否需要确认
+  executed?: boolean;  // 是否已自动执行
+  result?: { success: boolean; data?: string; error?: string };  // 执行结果
 }
 
 // 技能执行结果
@@ -275,11 +277,12 @@ export async function executeSkill(
   options?: {
     skillsDir?: string;
     autoExecute?: boolean;
+    workspaceDir?: string;
     userId?: string;
     sessionId?: string;
   }
 ): Promise<SkillExecutionResult> {
-  console.log(`[SkillExecutor] 执行技能: ${skillName}`);
+  console.log(`[SkillExecutor] 执行技能: ${skillName} (auto=${options?.autoExecute ?? false})`);
 
   const result = loadSkill(skillName, options?.skillsDir);
 
@@ -287,15 +290,87 @@ export async function executeSkill(
     return result;
   }
 
-  // 简化版：只返回指令，不自动执行
+  // 如果不需要自动执行，只返回指令
   if (!options?.autoExecute) {
     result.summary = formatSkillInstructions(skillName, options?.skillsDir);
     return result;
   }
 
-  // 完整版（待实现）：自动执行步骤
-  // TODO: 实现自动执行逻辑
-  console.warn('[SkillExecutor] 自动执行模式尚未实现，返回指令模式');
+  // ── 自动执行模式 ──
+  const workspace = options?.workspaceDir || process.cwd()
+  let executedCount = 0
+  let skippedRisky = 0
 
+  for (const step of result.steps) {
+    // 高风险步骤跳过（需要用户确认）
+    if (step.risky) {
+      skippedRisky++
+      continue
+    }
+
+    // 纯说明步骤跳过（没有可执行内容）
+    if (step.type === 'instruction') {
+      continue
+    }
+
+    try {
+      step.executed = true
+
+      if (step.type === 'command') {
+        // 执行 shell 命令
+        const { execSync } = await import('node:child_process')
+        try {
+          const output = execSync(step.content, {
+            cwd: workspace,
+            timeout: 30000,
+            encoding: 'utf-8',
+            maxBuffer: 1024 * 1024,
+          })
+          step.result = { success: true, data: output.slice(0, 2000) }
+          executedCount++
+          console.log(`[SkillExecutor] ✅ ${step.description}`)
+        } catch (cmdErr: any) {
+          step.result = {
+            success: false,
+            error: cmdErr.stderr?.slice(0, 500) || cmdErr.message?.slice(0, 500) || 'Command failed',
+          }
+          console.log(`[SkillExecutor] ❌ ${step.description}: ${step.result.error?.slice(0, 80)}`)
+        }
+      } else if (step.type === 'file_operation') {
+        // 文件操作 — 解析内容并写入
+        try {
+          const fs = await import('node:fs')
+          const writeMatch = step.content.match(/write\(['"]([^'"]+)['"],\s*['"]([\s\S]*)['"]\)/)
+          if (writeMatch) {
+            const filePath = writeMatch[1].startsWith('/') ? writeMatch[1] : `${workspace}/${writeMatch[1]}`
+            const fileContent = writeMatch[2]
+            fs.writeFileSync(filePath, fileContent, 'utf-8')
+            step.result = { success: true, data: `Written to ${filePath}` }
+            executedCount++
+          } else {
+            step.result = { success: false, error: 'Cannot parse file operation' }
+          }
+        } catch (fsErr: any) {
+          step.result = { success: false, error: fsErr.message?.slice(0, 300) }
+        }
+      } else {
+        // api_call — 暂不支持自动执行
+        step.result = { success: false, error: 'API calls require manual execution' }
+      }
+    } catch (e: any) {
+      step.result = { success: false, error: e.message?.slice(0, 300) }
+    }
+  }
+
+  // 构建结果摘要
+  const parts: string[] = []
+  if (executedCount > 0) {
+    parts.push(`Auto-executed ${executedCount} step(s) successfully.`)
+  }
+  if (skippedRisky > 0) {
+    parts.push(`${skippedRisky} risky step(s) skipped (need user confirmation).`)
+  }
+
+  result.summary = parts.join(' ') || 'No steps auto-executed.'
   return result;
 }

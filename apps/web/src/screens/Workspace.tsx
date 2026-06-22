@@ -22,9 +22,10 @@ function newId(): string { return `m_${Date.now()}_${Math.random().toString(36).
 const MSGS_KEY = 'dasheng_workspace_msgs'
 const THREAD_KEY = 'dasheng_workspace_thread'
 
-const WELCOME: UiMessage = {
-  id: 'welcome', role: 'assistant', timestamp: Date.now(),
-  content: '你好！我是 DaShengOS 智能工作台 🧠\n\n直接告诉我你想做什么，我会自动调度所需工具：\n\n• 简单问答 → 直接回复\n• 查资料 → 自动搜索互联网\n• 写文章 → AI 智能写作\n• 复杂任务 → 自动编排执行',
+const WELCOME_DEFAULT = '你好！我是 DaShengOS 智能工作台 🧠\n\n直接告诉我你想做什么，我会自动调度所需工具：\n\n• 简单问答 → 直接回复\n• 查资料 → 自动搜索互联网\n• 写文章 → AI 智能写作\n• 复杂任务 → 自动编排执行'
+
+function getDefaultWelcome(): UiMessage {
+  return { id: 'welcome', role: 'assistant', timestamp: Date.now(), content: WELCOME_DEFAULT }
 }
 
 function loadMsgs(): UiMessage[] {
@@ -35,7 +36,7 @@ function saveMsgs(msgs: UiMessage[]) { localStorage.setItem(MSGS_KEY, JSON.strin
 export function Workspace() {
   const [messages, setMessages] = useState<UiMessage[]>(() => {
     const saved = loadMsgs()
-    return saved.length > 0 ? saved : [WELCOME]
+    return saved.length > 0 ? saved : [getDefaultWelcome()]
   })
   const [input, setInput] = useState('')
   const [running, setRunning] = useState(false)
@@ -49,10 +50,32 @@ export function Workspace() {
   useEffect(() => { chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' }) }, [messages])
   useEffect(() => { inputRef.current?.focus() }, [])
 
+  // 🔄 动态欢迎语：从后端加载可配置欢迎语
+  useEffect(() => {
+    const token = localStorage.getItem('dasheng-auth')
+    if (!token) return
+    try {
+      const auth = JSON.parse(token)
+      fetch('/api/v1/chat/welcome', {
+        headers: { Authorization: `Bearer ${auth.state?.accessToken || ''}` },
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (data.workspace) {
+            const saved = loadMsgs()
+            if (saved.length === 0 || saved[0]?.id === 'welcome') {
+              setMessages([{ id: 'welcome', role: 'assistant', timestamp: Date.now(), content: data.workspace }])
+            }
+          }
+        })
+        .catch(() => {})
+    } catch {}
+  }, [])
+
   function clearHistory() {
     localStorage.removeItem(MSGS_KEY)
     saveMsgs([])
-    setMessages([WELCOME])
+    setMessages([getDefaultWelcome()])
   }
 
   async function handleSend() {

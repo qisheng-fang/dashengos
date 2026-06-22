@@ -175,14 +175,14 @@ def generate_docx(data: dict, path: str) -> None:
 def generate_pdf(data: dict, path: str) -> None:
     try:
         from weasyprint import HTML
-    except ImportError:
-        # Graceful fallback message
+    except Exception as e:
+        # Graceful fallback message (ImportError or OSError when system libs missing)
         msg = (
-            "weasyprint 未安装。请运行:\n"
-            "  pip install weasyprint\n"
-            "或安装系统依赖:\n"
-            "  brew install pango cairo (macOS)\n"
-            "  apt install libpango-1.0-0 libcairo2 (Linux)"
+            f"weasyprint 加载失败: {e}\n\n"
+            "请安装系统依赖:\n"
+            "  macOS: brew install pango gdk-pixbuf libffi\n"
+            "  Linux: apt install libpango-1.0-0 libcairo2\n\n"
+            "然后再运行: pip install weasyprint"
         )
         print(json.dumps({"ok": False, "error": msg}))
         sys.exit(1)

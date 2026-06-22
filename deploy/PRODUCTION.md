@@ -288,6 +288,11 @@ docker start dasheng-backend
 - [ ] admin 密码改完 (默认 admin12345)
 - [ ] SSH key 设了 (D 阶段配的 ed25519)
 - [ ] Login lockout 5/15min 验过 (5 fail 后 429)
+- [ ] 🆕 `CORS_ORIGINS` 配真实域名 (逗号分隔, 例: `https://dasheng.example.com`)
+- [ ] 🆕 `COOKIE_ENCRYPTION_KEY` ≥ 32 字符真随机
+- [ ] 🆕 `AUDIT_LOG_HMAC_SECRET` ≥ 32 字符真随机
+- [ ] 🆕 CSP 开启: `CSP_ENABLED=true`
+- [ ] 🆕 CSRF 保护: `CSRF_ENABLED=true` (需装 `@fastify/csrf-protection`)
 
 ---
 
@@ -325,4 +330,26 @@ DB 慢?
 
 ---
 
-**部署文档完。Phase A+B+C+D 17 fix 全部 push 远端, 老板按 §0 必做清单 + §6 checklist 走完就 prod-ready。**
+**部署文档完。Phase A+B+C+D 17 fix + Track B.1 全部 push 远端, 老板按 §0 必做清单 + §6 checklist 走完就 prod-ready。**
+
+---
+## 9. 🆕 社媒 Cookie 管理 (Track B.1)
+
+**用途**: 抖音/小红书/微信公众号发布的 cookie 安全存储与自动注入。
+
+**API 端点** (需 JWT):
+| 方法 | 端点 | 用途 |
+|------|------|------|
+| GET | `/api/v1/social/cookies` | 列所有平台 cookie 状态 |
+| GET | `/api/v1/social/cookies/:platform` | 取解密后的 cookie 值 |
+| PUT | `/api/v1/social/cookies/:platform` | 存/更新 AES-256-GCM 加密 cookie |
+| DELETE | `/api/v1/social/cookies/:platform` | 删除 cookie |
+
+**安全**: 加密密钥默认从 JWT_SECRET 派生, 生产需独立配 `COOKIE_ENCRYPTION_KEY` (≥32字符)。
+
+---
+## 10. 🆕 PostgreSQL 迁移
+
+切换: `DATABASE_TYPE=postgres DATABASE_URL=postgres://...` 到 .env
+迁移脚本: `deploy/migrate-sqlite-to-pg.sh`
+env 模板: `deploy/.env.production.example`

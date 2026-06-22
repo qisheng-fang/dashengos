@@ -8,6 +8,7 @@ import path from 'node:path'
 const routerPlugin = TanStackRouterVite({
   routesDirectory: './src/routes',
   generatedRouteTree: './src/routeTree.gen.ts',
+  routeFileIgnorePattern: '.*\\.(documents|diagnostics|visualizations|settings\\.(automations|learnings|memory|social-cookies|admin))\\.tsx$',
 }) as unknown as import('vite').Plugin
 
 export default defineConfig({
@@ -61,6 +62,13 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         secure: false,
+      },
+      // Agent Bridge 代理: 前端 /agent → :8001 (strip /agent prefix)
+      '/agent': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (p: string) => p.replace(/^\/agent/, ''),
       },
     },
   },

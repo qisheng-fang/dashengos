@@ -1,11 +1,20 @@
 // packages/backend/src/core/agent/loop.ts
-// DaShengOS Agent Runtime — Loop Controller
-// 观察→思考→行动→验证→迭代 循环引擎
-// P3 (2026-06-18): 集成自我诊断/修复模式
+// DaShengOS Agent Runtime — Loop Controller v6.0
+// OMNI-BRAIN OS State Machine: THINK → TOOL → RESPOND
+// 2026-06-22: Full harness integration
 
-import { getToolsForLLM, getAllToolsForLLM, executeTool, executeToolsParallel, ToolCall, ToolResult } from '../tools/registry.js'
+import { getToolsForLLM, getAllToolsForLLM, executeToolsParallel, ToolCall, ToolResult } from '../tools/registry.js'
 import { getActiveProvider, getApiKey } from '../../providers/index.js'
 import { runDiagnostics } from '../self-heal/diagnostics.js'
+import { buildSuperSystemPrompt } from '../harness/system-prompt.js'
+import { loadMemoryContext } from '../harness/memory.js'
+import { analyzeConversationEnd } from '../harness/skill-discovery.js'
+import { assessComplexity, generatePlan, type TaskPlan } from '../harness/planner.js'
+import { verifyResult, createReflectionLog, type ReflectionLog } from '../harness/reflector.js'
+import { parseMacros, stripGhostResponse, type ParsedMacros } from './macro-parser.js'
+import { routeModel } from '../model-router.js'
+import { recordEvolution, recommendStrategy, getErrorFix } from '../self-evolve.js'
+import { compressContext, quickCompress } from '../context-compressor.js'
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -14,10 +23,12 @@ export interface AgentLoopOptions {
   sessionId?: string
   workspaceDir: string
   systemPrompt?: string
-  maxIterations?: number    // default 25
-  maxErrorRetries?: number // default 3
-  elevatedMode?: boolean   // if true, skip confirmation gate
-  selfHealMode?: boolean  // if true, enable self-heal capabilities
+  maxIterations?: number
+  maxErrorRetries?: number
+  elevatedMode?: boolean
+  selfHealMode?: boolean
+  onEvent?: (event: LoopEvent) => void
+  onToken?: (token: string) => void
 }
 
 export interface AgentLoopStep {
@@ -29,396 +40,429 @@ export interface AgentLoopStep {
   durationMs: number
 }
 
+export type LoopEvent =
+  | { type: 'status'; text: string }
+  | { type: 'tool_start'; name: string; args: Record<string, any> }
+  | { type: 'tool_end'; name: string; success: boolean; summary: string }
+  | { type: 'error'; message: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'searching'; query: string }
+  | { type: 'done'; finish_reason: string }
+
 export interface AgentLoopResult {
   success: boolean
-  response: string          // final text response to user
-  steps: AgentLoopStep[]     // full execution trace
+  response: string
+  steps: AgentLoopStep[]
   totalTokens: { prompt: number; completion: number }
   error?: string
   needsConfirmation?: Array<{ name: string; args: Record<string, any> }>
-  diagnosticsResult?: any   // if selfHealMode=true and diagnostics were run
+  diagnosticsResult?: any
+  systemPrompt?: string
+  reflectionLog?: ReflectionLog[]
 }
 
-function normalizeUsage(
-  u?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null
-): { prompt: number; completion: number } {
-  return u ? { prompt: u.prompt_tokens, completion: u.completion_tokens } : { prompt: 0, completion: 0 }
+function safeJsonParse(s: string): Record<string, any> {
+  try { return JSON.parse(s) } catch { return {} }
 }
 
-// ─── System Prompt (Agent Mode) ────────────────────────
+async function buildAgentSystemPrompt(userId: string, opts: { selfHealMode?: boolean; taskType?: string }): Promise<string> {
+  try {
+    const memory = loadMemoryContext(userId)
+    return buildSuperSystemPrompt({
+      memory,
+      wikiPages: memory.wikiPages?.length ? memory.wikiPages : undefined,
+      mode: 'agent',
+      taskType: (opts.selfHealMode ? 'technical' : opts.taskType || 'chat') as any,
+    })
+  } catch {
+    return buildSuperSystemPrompt({ mode: 'agent', taskType: opts.selfHealMode ? 'technical' : 'chat' })
+  }
+}
 
-const AGENT_SYSTEM_PROMPT = `You are DaShengOS Agent Runtime, an autonomous AI assistant that can read files, run commands, search code, and fix problems.
-
-## Your Capabilities
-- Read/write/edit files in the project workspace
-- Run shell commands (build, test, install dependencies)
-- Search code with regex patterns
-- Check process/port status
-- Query the database (read-only)
-- Fetch web content and search
-
-## Rules
-1. ALWAYS use tools when you need to gather information or make changes
-2. When a task requires multiple steps, do them one at a time — don't try to do everything in one call
-3. If a tool returns an error, analyze it and try a different approach
-4. Be concise but thorough — show your reasoning when using tools
-5. Never guess file contents — always use read_file to check first
-6. Prefer edit_file over write_file for small changes (safer)
-7. After fixing something, verify the fix worked
-
-## Safety
-- You operate within the project directory sandbox
-- Some operations require user confirmation
-- Always explain what you're going to do before doing it`
-
-const SELF_HEAL_SYSTEM_PROMPT = `You are DaShengOS Self-Heal Agent, an autonomous AI system administrator that can diagnose and fix problems.
-
-## Your Capabilities
-- Run system diagnostics (processes, ports, disk, build status)
-- Analyze error logs and identify patterns
-- Fix common issues (restart services, install dependencies, fix configs)
-- Read/write/edit system files
-- Execute shell commands with user approval
-
-## Self-Heal Workflow
-1. **Diagnose**: When user reports an issue or system seems unhealthy, run diagnostics first
-2. **Analyze**: Identify root cause from error patterns and health checks
-3. **Plan**: Propose fix steps (explain what you'll do)
-4. **Confirm**: Wait for user approval for write operations
-5. **Execute**: Apply fixes one at a time
-6. **Verify**: Re-run diagnostics to confirm fix worked
-
-## Available Diagnostic Tools
-- run_diagnostics: Full system diagnosis (processes, ports, disk, build)
-- quick_health_check: Fast health check
-- read_logs: Read and analyze log files
-- check_process: Check if a process is running
-- check_port: Check if a port is listening
-
-## Rules
-1. ALWAYS run diagnostics before attempting fixes
-2. Explain your diagnosis and proposed fix clearly
-3. For dangerous operations (rm -rf, system config changes), emphasize the risk
-4. After each fix, verify it worked
-5. If you can't fix it, explain why and suggest manual steps
-
-## Safety
-- You operate within the project directory sandbox
-- Write operations require user confirmation (unless elevated mode)
-- Never execute unverified commands from logs`
-
-// ─── Main Loop ─────────────────────────────────────────
-
-/**
- * Run the agent loop: send user message through LLM → tool_calls → execute → loop.
- * This is the core of the self-repair / autonomous capability.
- */
 export async function runAgentLoop(
   userMessage: string,
   conversationHistory: Array<{ role: string; content: string }> = [],
   options: AgentLoopOptions
 ): Promise<AgentLoopResult> {
   const {
-    userId,
-    sessionId,
-    workspaceDir,
-    systemPrompt,
-    maxIterations = 25,
-    maxErrorRetries = 3,
-    elevatedMode = false,
-    selfHealMode = false,
+    userId, sessionId, workspaceDir, systemPrompt,
+    maxIterations = 25, maxErrorRetries = 3,
+    elevatedMode = false, selfHealMode = false,
+    onEvent, onToken,
   } = options
 
   const steps: AgentLoopStep[] = []
+  const reflectionLog: ReflectionLog[] = []
   const toolsForLLM = elevatedMode ? getAllToolsForLLM() : getToolsForLLM()
 
-  // Choose system prompt based on mode
-  const systemPromptText = systemPrompt || (selfHealMode ? SELF_HEAL_SYSTEM_PROMPT : AGENT_SYSTEM_PROMPT)
+  // ── THINK PHASE: Macro parsing + complexity assessment ──
+  const macroResult: ParsedMacros = parseMacros(userMessage)
+  const effectiveMessage = macroResult.cleanMessage
+  const effectiveMaxIterations = macroResult.loopOverrides.maxIterations ?? maxIterations
+  const isGhostMode = macroResult.mode === 'ghost'
+  const isDeepDive = macroResult.mode === 'deep_dive'
+  const isHalt = macroResult.loopOverrides.haltImmediately
 
-  // Build messages array for LLM
-  const messages: Array<any> = [
+  if (isHalt) {
+    return { success: true, response: '■ Halt & Catch Fire — 紧急制动已激活。所有任务已终止。', steps: [{ iteration: 1, type: 'think', input: userMessage, output: 'halt triggered', durationMs: 0 }], totalTokens: { prompt: 0, completion: 0 }, systemPrompt: 'halt' }
+  }
+
+  onEvent?.({ type: 'status', text: isGhostMode ? 'Ghost Mode — 静默执行' : isDeepDive ? 'Deep Dive — 深度分析' : 'DaShengOS Agent 引擎启动' })
+
+  const complexity = assessComplexity(effectiveMessage)
+  let taskPlan: TaskPlan | null = null
+  // ── EVOLUTION: recommend best strategy ──
+  let evolutionStrategy: any = null
+  try {
+    evolutionStrategy = recommendStrategy(effectiveMessage)
+    if (evolutionStrategy.strategy) {
+      onEvent?.({ type: 'thinking', text: `[进化] ${evolutionStrategy.reason}` })
+    }
+  } catch { /* evolution non-critical */ }
+
+  if (complexity === 'complex' || complexity === 'moderate') {
+    try {
+      taskPlan = await generatePlan(effectiveMessage, conversationHistory)
+      // Inject evolution strategy into plan if available
+      if (evolutionStrategy?.strategy && taskPlan) {
+        taskPlan.steps = [
+          { index: 0, action: "[进化策略] " + evolutionStrategy.strategy.name, tool: "auto", expectedOutput: evolutionStrategy.strategy.description, verificationHint: "Check evolution strategy applied" },
+          ...taskPlan.steps
+        ]
+      }
+      onEvent?.({ type: 'thinking', text: `[THINK] 复杂度:${complexity} | 根问题:${taskPlan.rootQuestion.slice(0, 60)} | 步骤:${taskPlan.steps.length}` })
+    } catch { /* planner failure is non-critical */ }
+  }
+
+  const provider = getActiveProvider()
+  const apiKey = getApiKey(provider) ?? ''
+  if (!provider) {
+    return { success: false, response: '错误：没有可用的 LLM 提供商。', steps, totalTokens: { prompt: 0, completion: 0 }, error: 'No provider' }
+  }
+
+  // ── System prompt with plan injection ──
+  let systemPromptText = systemPrompt || await buildAgentSystemPrompt(userId, { selfHealMode, taskType: complexity === 'complex' ? 'analysis' : 'chat' })
+  if (macroResult.systemPromptInjection) systemPromptText = macroResult.systemPromptInjection + '\n\n' + systemPromptText
+  if (taskPlan) {
+    systemPromptText += `\n\n[TASK PLAN]\nRoot: ${taskPlan.rootQuestion}\nConstraints: ${taskPlan.constraints.join(', ')}\nLeverage: ${taskPlan.highestLeverage}\nSteps:\n${taskPlan.steps.map(s => `${s.index}. ${s.action} → tool:${s.tool || 'auto'} | expect:${s.expectedOutput}`).join('\n')}`
+  }
+
+  let messages: Array<any> = [
     { role: 'system', content: systemPromptText },
     ...conversationHistory.map(m => ({ role: m.role === 'assistant' ? 'assistant' : m.role, content: m.content })),
-    { role: 'user', content: userMessage },
+    { role: 'user', content: effectiveMessage },
   ]
 
   let consecutiveErrors = 0
-  const pendingConfirmations: Array<{ name: string; args: Record<string, any> }> = []
+  let consecutiveToolOnly = 0  // Track consecutive tool-only iterations
+  let totalToolCalls = 0       // Total tool calls across all iterations (for force-synthesis)
+  // lastRealContent tracking removed (unused)
   let diagnosticsResult: any = null
+  // ── INTELLIGENT MODEL ROUTING ──
+  let model = (provider as any).defaultModel || 'deepseek-v4-flash'
+  try {
+    const { getProviders } = await import('../../providers/index.js')
+    const allProviders = getProviders()
+    const providerInfos = allProviders.map((p: any) => ({
+      name: p.name, displayName: p.displayName, defaultModel: p.defaultModel,
+      fallbackModels: p.fallbackModels || [], supportsTools: p.supportsTools,
+      supportsVision: p.supportsVision, contextWindow: p.contextWindow,
+    }))
+    const route = routeModel(effectiveMessage, providerInfos, provider.name)
+    if (route.model !== model && route.provider === provider.name) {
+      model = route.model
+      console.log('[ModelRouter]', route.reason)
+    }
+  } catch { /* router non-critical */ }
 
-  // ── Main loop ──
-  for (let i = 0; i < maxIterations; i++) {
+  for (let i = 0; i < effectiveMaxIterations; i++) {
     const iterStart = Date.now()
 
+    
+
+    // ── THINK: emit thinking event each iteration ──
+    if (i > 0) onEvent?.({ type: 'thinking', text: `迭代 #${i + 1}` })
+
     try {
-      // Step 1: Call LLM with tools available
-      const provider = getActiveProvider()
-      if (!provider) {
-        steps.push({ iteration: i + 1, type: 'error', input: userMessage, output: null, durationMs: Date.now() - iterStart })
-        return {
-          success: false,
-          response: '错误：没有可用的 LLM 提供商。请检查 LLM_PROVIDER 配置。',
-          steps,
-          totalTokens: { prompt: 0, completion: 0 },
-          error: 'No active LLM provider',
+      // ── CONTEXT COMPRESSION: auto-compress if message history too long ──
+      if (messages.length > 20) {
+        const { messages: compressed, compressed: wasCompressed } = compressContext(messages.slice(1), systemPromptText)
+        if (wasCompressed) {
+          messages = [messages[0], ...compressed] // keep system prompt
+          console.log('[Loop] Context compressed: ' + messages.length + ' messages')
+        }
+      }
+      
+      // ── TOOL: streaming with fallback ──
+      let fullContent = ''
+      let thinkingContent = ''
+      let streamedTokens = 0
+      let tokenBuffer = ''
+      const toolCallsAcc = new Map<string, { id: string; name: string; args: string }>()
+      let streamed = false
+
+      if ((provider as any).chatStream) {
+        try {
+          for await (const chunk of (provider as any).chatStream(
+            { model, messages, max_tokens: isDeepDive ? 8192 : 4096, temperature: isDeepDive ? 0.1 : 0.3, tools: toolsForLLM as any },
+            apiKey, undefined,
+          )) {
+            if (chunk.type === 'token') {
+            fullContent += chunk.content; streamedTokens++;
+            // Buffer first 20 chars of actual content (not thinking) to check for thinking prefix before streaming
+            if (streamedTokens <= 20) {
+              tokenBuffer += chunk.content
+            } else {
+              if (tokenBuffer) { onToken?.(tokenBuffer); tokenBuffer = '' }
+              onToken?.(chunk.content)
+            }
+          }
+            else if (chunk.type === 'thinking') { thinkingContent += chunk.content; /* thinking = hidden, never becomes response */ }
+            else if (chunk.type === 'tool_call') {
+              const callId = chunk.meta?.tool_call_id || 'unknown'
+              let acc = toolCallsAcc.get(callId)
+              if (!acc) { acc = { id: callId, name: chunk.meta?.tool_name || '', args: '' }; toolCallsAcc.set(callId, acc) }
+              if (chunk.meta?.tool_name && !acc.name) acc.name = chunk.meta.tool_name
+              acc.args += chunk.content
+            } else if (chunk.type === 'status') { onEvent?.({ type: 'status', text: chunk.content }) }
+          }
+          streamed = true
+        } catch (e: any) { console.log('[Loop] stream fallback:', String(e).slice(0, 80)) }
+      }
+
+      if (!streamed || streamedTokens === 0) {
+        const fb = await provider.chat(
+          { model, messages, max_tokens: isDeepDive ? 8192 : 4096, temperature: isDeepDive ? 0.1 : 0.3, tools: toolsForLLM as any },
+          apiKey,
+        )
+        fullContent = fb.content || ''
+        if (fb.tool_calls) {
+          fb.tool_calls.forEach((tc: any) => {
+            toolCallsAcc.set((tc as any).id || 'tc_' + toolCallsAcc.size, {
+              id: (tc as any).id || '', name: tc.function?.name || '', args: tc.function?.arguments || '{}',
+            })
+          })
+        }
+        if (fullContent && onToken) {
+          const cs = 4; for (let ci = 0; ci < fullContent.length; ci += cs) onToken(fullContent.slice(ci, ci + cs))
         }
       }
 
-      // Call LLM with tools
-      const apiKey = getApiKey(provider) || ''
-      const llmResponse = await provider.chat(
-        {
-          messages,
-          max_tokens: 4096,
-          temperature: 0.3,
-          tools: toolsForLLM as any,
-        },
-        apiKey,
+      const accTools = Array.from(toolCallsAcc.values()).filter(t => t.name)
+      const hasToolCalls = accTools.length > 0
+      const hasContent = fullContent && fullContent.trim().length > 0
+
+      
+
+      // ── Auto-retry: LLM outputs "thinking" but no tools → force retry ──
+      const thinkingPrefixes = [
+        '我来', '让我', '我先', '好的', '收到', 'OK', 'Let me', 'I will', 'First',
+        '开始执行', '我将', '正在', '我会', '我先来', '让我来', '首先',
+        '接下来', '下面', '现在', '准备', '需要', '可以', '请稍等',
+        '好的，', '收到，', '明白了', '理解',
+        'Starting', 'I need', 'I should', 'First,', "Let's", 'Now ',
+        '开始', '第一步', '第一步是', '第1步',
+      ]
+// Dead-end detection: model complains about search results but produces no answer
+      const deadEndPhrases = ['搜索结果不', '网络搜索失败', '找不到', '没有找到', '无法获取', '未找到', '搜索不到', 'no results', 'search failed', 'could not find'];
+      const isDeadEnd = hasContent && !hasToolCalls && deadEndPhrases.some(p => fullContent.includes(p));
+      
+      const looksLikeThinking = hasContent && !hasToolCalls && (
+        thinkingPrefixes.some(p => fullContent.trim().startsWith(p))
       )
 
-      // Check what LLM returned
-      const hasToolCalls = llmResponse.tool_calls && llmResponse.tool_calls.length > 0
-      const hasContent = llmResponse.content && llmResponse.content.trim().length > 0
-
-      if (hasToolCalls) {
-        const tcs = llmResponse.tool_calls!
-        // ── TOOL_CALL state: execute tools and feed results back ──
-        steps.push({
-          iteration: i + 1,
-          type: 'tool_call',
-          input: `LLM requested ${tcs.length} tool call(s)`,
-          output: null,
-          toolCalls: tcs.map((tc: any) => ({ name: tc.function.name, args: JSON.parse(tc.function.arguments), result: {} as ToolResult })),
-          durationMs: Date.now() - iterStart,
-        })
-
-        // Add LLM's response (with tool_calls) to message history
-        messages.push({
-          role: 'assistant',
-          content: llmResponse.content || '',
-          tool_calls: tcs,
-        })
-
-        // Execute all tool calls
-        const toolCallList: ToolCall[] = tcs.map((tc: any) => ({
-          id: tc.id,
-          name: tc.function.name,
-          args: JSON.parse(tc.function.arguments),
-        }))
-
-        // Filter to only valid tool names
-        const validCalls = toolCallList.filter(tc => toolsForLLM.some((t: any) => t.function.name === tc.name))
-
-        if (validCalls.length < toolCallList.length) {
-          const invalidNames = toolCallList.filter(c => !validCalls.includes(c)).map(c => c.name)
-          messages.push({
-            role: 'user' as any,
-            content: `[System] Error: The following tools are not available: ${invalidNames.join(', ')}. Available tools: ${toolsForLLM.map((t: any) => t.function.name).join(', ')}. Please try again.`,
-          })
-          consecutiveErrors++
-          if (consecutiveErrors >= maxErrorRetries) break
-          continue
-        }
-
-        // Execute tools (with confirmation gate if not elevated mode)
-        const execContext = { userId, sessionId, workspaceDir, maxTimeout: 30000 }
-        
-        let results: Map<string, ToolResult>
-        if (!elevatedMode && selfHealMode) {
-          // Use confirmation gate for write operations
-          results = new Map()
-          for (const tc of validCalls) {
-            const result = await executeTool(tc, execContext)
-            results.set(`${tc.name}:${JSON.stringify(tc.args)}`, result)
-          }
-        } else {
-          // Execute in parallel (no confirmation gate)
-          results = await executeToolsParallel(validCalls, execContext)
-        }
-
-        // Check for confirmation requests
-        const needConfirmation = new Map<string, ToolResult>()
-        for (const [key, result] of results.entries()) {
-          if (result.needsConfirmation) {
-            needConfirmation.set(key, result)
-          }
-        }
-
-        if (needConfirmation.size > 0 && !elevatedMode) {
-          // Collect pending confirmations and stop loop
-          for (const [key, _result] of needConfirmation.entries()) {
-            const [name, argsStr] = key.split(':')
-            pendingConfirmations.push({ name, args: JSON.parse(argsStr) })
-          }
-          // Feed back that confirmation is needed
-          messages.push({
-            role: 'user' as any,
-            content: `[User Confirmation Required] The following operations need user approval before proceeding:\n${pendingConfirmations.map(c => `- **${c.name}**: ${JSON.stringify(c.args).slice(0, 200)}`).join('\n')}\nPlease wait for user confirmation.`,
-          })
-
-          // Return partial result with confirmation request
-          return {
-            success: true,
-            response: `⚠️ 需要 ${pendingConfirmations.length} 个操作的用户确认后才能继续执行。`,
-            steps,
-            totalTokens: normalizeUsage(llmResponse.usage),
-            needsConfirmation: pendingConfirmations,
-            diagnosticsResult,
-          }
-        }
-
-        // Add tool results to message history (OpenAI format: each tool result as a separate message)
-        for (const [key, result] of results.entries()) {
-          const [name] = key.split(':')
-          messages.push({
-            role: 'tool' as any,
-            content: result.success
-              ? result.data || 'Operation completed successfully'
-              : `[ERROR] ${result.error}`,
-            name,
-            tool_call_id: '', // not strictly needed for non-streaming
-          })
-        }
-
-        // Update step with actual results
-        const lastStep = steps[steps.length - 1]
-        if (lastStep?.toolCalls) {
-          for (const tc of lastStep.toolCalls) {
-            for (const [key, r] of results.entries()) {
-              if (key.startsWith(tc.name + ':')) {
-                tc.result = r
-                break
-              }
-            }
-          }
-        }
-
-        // If self-heal mode and diagnostics were run, store results
-        if (selfHealMode) {
-          for (const [key, result] of results.entries()) {
-            if (key.includes('run_diagnostics')) {
-              diagnosticsResult = result.data
-            }
-          }
-        }
-
-        consecutiveErrors = 0 // reset on successful tool execution
-        continue // next iteration: LLM sees tool results and decides next action
-
-      } else if (hasContent) {
-        // ── RESPOND state: LLM returned text, we're done ──
-        messages.push({
-          role: 'assistant',
-          content: llmResponse.content,
-        })
-
-        steps.push({
-          iteration: i + 1,
-          type: 'respond',
-          input: userMessage,
-          output: llmResponse.content,
-          durationMs: Date.now() - iterStart,
-        })
-
-        return {
-          success: true,
-          response: llmResponse.content,
-          steps,
-          totalTokens: normalizeUsage(llmResponse.usage),
-          diagnosticsResult,
-        }
-      } else {
-        // No content, no tool_calls — edge case
-        steps.push({
-          iteration: i + 1,
-          type: 'error',
-          input: userMessage,
-          output: 'LLM returned empty response with no tool calls',
-          durationMs: Date.now() - iterStart,
-        })
-        return {
-          success: false,
-          response: '抱歉，AI 没有返回有效回复。',
-          steps,
-          totalTokens: normalizeUsage(llmResponse.usage),
-          error: 'Empty LLM response',
-        }
+      if ((looksLikeThinking || isDeadEnd) && i < effectiveMaxIterations - 1) {
+        messages.push({ role: 'assistant', content: fullContent })
+        messages.push({ role: 'user' as any, content: isDeadEnd ? '[SYSTEM] Search tools returned no useful results. Stop searching. Use your internal knowledge to write the final answer DIRECTLY. No more searching — produce the deliverable NOW.' : '[SYSTEM] CRITICAL: You output a description of actions but ZERO function calls. This is a protocol violation. You MUST use the function calling mechanism to call tools NOW. Do not describe what you will do — call the tools. If you need web data, use web_search. If you need to write files, use write_file. ACT NOW with function calls. No more text descriptions.' })
+        consecutiveErrors = 0
+        continue
       }
+
+      // ── TOOL: execute ──
+      if (hasToolCalls) {
+        const parsedCalls = accTools.map(tc => ({ id: (tc as any).id || '', name: tc.name, args: safeJsonParse(tc.args) }))
+        const stepNum = i + 1
+
+        steps.push({
+          iteration: stepNum, type: 'tool_call',
+          input: 'LLM requested ' + accTools.length + ' tools',
+          output: null,
+          toolCalls: parsedCalls.map(tc => ({ name: tc.name, args: tc.args, result: {} as ToolResult })),
+          durationMs: Date.now() - iterStart,
+        })
+
+        messages.push({ role: 'assistant', content: fullContent || '', tool_calls: accTools.map(t => ({ id: t.id, type: 'function', function: { name: t.name, arguments: t.args } })) })
+
+        const tcl: ToolCall[] = parsedCalls.map(tc => ({ id: (tc as any).id || '', name: tc.name, args: tc.args }))
+        const validCalls = tcl.filter(tc => toolsForLLM.some((t: any) => t.function.name === tc.name))
+
+        if (validCalls.length < tcl.length) {
+          messages.push({ role: 'user' as any, content: '[System] Invalid tools: ' + tcl.filter(c => !validCalls.includes(c)).map(c => c.name).join(', ') })
+          consecutiveErrors++; if (consecutiveErrors >= maxErrorRetries) break; continue
+        }
+
+        for (const tc of validCalls) onEvent?.({ type: 'tool_start', name: tc.name, args: tc.args })
+        // Auto-confirm non-high-risk tools in agent mode (write_file, edit_file, run_command, etc.)
+        const confirmedSet = new Set<string>()
+        for (const tc of validCalls) {
+          // Skip auto-confirm for destructive commands
+          if (tc.args?.command && /rm -rf|DROP|DELETE|format/i.test(String(tc.args.command))) continue
+          confirmedSet.add(tc.name + ':' + JSON.stringify(tc.args))
+        }
+        const results = await executeToolsParallel(validCalls, { userId, sessionId, workspaceDir, maxTimeout: 60000 }, confirmedSet)
+
+        const resultEntries = Array.from(results.entries())
+        for (let ri = 0; ri < validCalls.length; ri++) {
+          const tc = validCalls[ri]
+          const resultEntry = resultEntries[ri]
+          if (!resultEntry) continue
+          const [, result] = resultEntry
+          messages.push({ role: 'tool' as any, content: result.success ? (result.data || 'OK') : '[ERROR] ' + result.error, name: tc.name, tool_call_id: (tc as any).id || '' })
+          onEvent?.({ type: 'tool_end', name: tc.name, success: result.success, summary: result.success ? 'OK' : (result.error?.slice(0, 100) || 'Failed') })
+
+          // ── REFLECTOR: verify tool result ──
+          try {
+            const vr = verifyResult(tc.name, result.success ? (result.data || 'OK') : '[ERROR] ' + result.error, tc.name)
+            if (!vr.passed) {
+              reflectionLog.push({ stepIndex: ri, action: tc.name, result: result.success ? 'ok' : 'fail', verification: vr, retryCount: 0, finalResult: result.success ? 'passed' : 'failed' })
+            }
+          } catch { /* reflection is non-critical */ }
+        }
+
+        const ls = steps[steps.length - 1]
+        if (ls?.toolCalls) for (let ri = 0; ri < validCalls.length; ri++) {
+          const tc = ls.toolCalls[ri]
+          const resultEntry = resultEntries[ri]
+          if (tc && resultEntry) tc.result = resultEntry[1]
+        }
+        if (selfHealMode) for (const [key, result] of results.entries()) if (key.includes('run_diagnostics')) diagnosticsResult = result.data
+        consecutiveErrors = 0;
+        consecutiveToolOnly++;
+        totalToolCalls += validCalls.length;
+        
+        // Force synthesis: aggressive thresholds
+        let forceMsg = ''
+        if (totalToolCalls >= 6) {
+          forceMsg = '[SYSTEM] CRITICAL: You have made ' + totalToolCalls + ' tool calls. STOP ALL SEARCHING. You have enough data. Produce the FINAL deliverable NOW using write_file. No more web_search. No more reasoning. Output only the deliverable.'
+        } else if (consecutiveToolOnly >= 3) {
+          forceMsg = '[SYSTEM] You have called tools 3 times in a row without output. STOP searching. Synthesize all results into the final deliverable NOW. Use write_file to save the output. DO NOT call web_search again.'
+        } else if (totalToolCalls >= 3 && i > effectiveMaxIterations - 3) {
+          forceMsg = '[SYSTEM] Running out of iterations (#' + (i+1) + '/' + effectiveMaxIterations + '). You MUST produce the final output NOW. Use write_file to save it.'
+        }
+        
+        if (forceMsg) {
+          messages.push({ role: 'user' as any, content: forceMsg })
+          consecutiveToolOnly = 0
+        }
+        continue
+      }
+
+      // ── Flush token buffer if response is valid ──
+      if (tokenBuffer && !looksLikeThinking) { onToken?.(tokenBuffer); tokenBuffer = '' }
+
+      // Reset tool-only counters only on substantial content (>150 chars, not just acknowledgments)
+      const contentLen = (fullContent || '').trim().length
+      if (contentLen > 150) { consecutiveToolOnly = 0; totalToolCalls = 0; /* lastRealContent tracking disabled */ }
+      else if (contentLen > 20) { consecutiveToolOnly = 0 }  // Short content resets consecutive but not total
+
+      // ── RESPOND: final answer ──
+      if (hasContent) {
+        messages.push({ role: 'assistant', content: fullContent })
+        steps.push({ iteration: i + 1, type: 'respond', input: userMessage, output: fullContent, durationMs: Date.now() - iterStart })
+        onEvent?.({ type: 'done', finish_reason: 'stop' })
+
+        // ── REFLECTOR: final reflection ──
+        try {
+          const finalVerification = verifyResult(userMessage, fullContent)
+          const rlog = createReflectionLog(steps.length, 'respond', fullContent.slice(0, 200), finalVerification, consecutiveErrors)
+          reflectionLog.push(rlog)
+        } catch { /* non-critical */ }
+
+        // ── GHOST MODE: strip commentary ──
+        const final = isGhostMode ? stripGhostResponse(fullContent) : fullContent
+
+        // ── SKILL DISCOVERY: synchronous inline ──
+        const skillToolSeq = steps.filter(s => s.type === 'tool_call').flatMap(s => s.toolCalls?.map(tc => tc.name) || [])
+        let skillDiscoveryResult: any = null
+        if (skillToolSeq.length >= 2) {
+          try {
+            skillDiscoveryResult = analyzeConversationEnd({ userId, sessionId: sessionId || 'unknown', userMessage: effectiveMessage, assistantResponse: final, toolCalls: skillToolSeq })
+            if (skillDiscoveryResult.newSkillGenerated) {
+              console.log('[Skill] 新技能已创建: ' + skillDiscoveryResult.newSkillGenerated)
+              onEvent?.({ type: 'status', text: '🛠️ 新技能自动创建: ' + skillDiscoveryResult.newSkillGenerated })
+            }
+            if (skillDiscoveryResult.suggestedSkill) {
+              console.log('[Skill] 建议复用: ' + skillDiscoveryResult.suggestedSkill)
+              onEvent?.({ type: 'status', text: '💡 建议复用技能: ' + skillDiscoveryResult.suggestedSkill })
+            }
+          } catch { /* non-critical */ }
+        }
+
+        // ── EVOLUTION: record session ──
+        const totalLatency = steps.reduce((s, t) => s + t.durationMs, 0)
+        const evoToolSeq = steps.filter(s => s.type === 'tool_call').flatMap(s => s.toolCalls?.map(tc => tc.name) || [])
+        try {
+          const evoRecord = recordEvolution({
+            sessionId: sessionId || 'unknown',
+            strategy: evolutionStrategy?.strategy?.name || 'default',
+            toolSequence: evoToolSeq,
+            success: true,
+            latencyMs: totalLatency,
+          })
+          console.log('[Evolution] Recorded:', evoRecord.id, '| score_delta:', evoRecord.score_delta)
+        } catch { /* evolution recording non-critical */ }
+
+        return { success: true, response: final, steps, totalTokens: { prompt: 0, completion: fullContent.length }, diagnosticsResult, systemPrompt: systemPromptText, reflectionLog }
+      }
+
+      // Empty response: if reasoning was generated, ask model to produce real content
+      if (thinkingContent.length > 0) {
+        // Model output reasoning but no content + no tool calls → push it to act
+        messages.push({ role: 'user' as any, content: '[SYSTEM] 推理已收到(长度:' + thinkingContent.length + ')。现在输出结果或调用工具。不要只思考。' })
+        steps.push({ iteration: i + 1, type: 'error', input: userMessage, output: 'Reasoning-only response (' + thinkingContent.length + ' chars)', durationMs: Date.now() - iterStart })
+        continue
+      }
+      if (fullContent.length > 0) {
+        messages.push({ role: 'user' as any, content: '[SYSTEM] 请继续输出或调用工具。' })
+        steps.push({ iteration: i + 1, type: 'error', input: userMessage, output: 'Partial response', durationMs: Date.now() - iterStart })
+        continue
+      }
+      steps.push({ iteration: i + 1, type: 'error', input: userMessage, output: 'Empty response', durationMs: Date.now() - iterStart })
+      return { success: false, response: '抱歉，AI 没有返回有效回复。', steps, totalTokens: { prompt: 0, completion: 0 }, error: 'Empty response', systemPrompt: systemPromptText }
 
     } catch (e: any) {
       consecutiveErrors++
       const errMsg = e.message?.slice(0, 300) || String(e)
+      steps.push({ iteration: i + 1, type: 'error', input: userMessage, output: 'Error: ' + errMsg, durationMs: Date.now() - iterStart })
+      onEvent?.({ type: 'error', message: errMsg })
 
-      steps.push({
-        iteration: i + 1,
-        type: 'error',
-        input: userMessage,
-        output: `Error at step ${i + 1}: ${errMsg}`,
-        durationMs: Date.now() - iterStart,
-      })
+      // ── EVOLUTION: check known error fixes ──
+      let evolutionFix: string | null = null
+      try { evolutionFix = getErrorFix(errMsg) } catch { /* non-critical */ }
+      if (evolutionFix) {
+        messages.push({ role: 'user' as any, content: '[EVO FIX] 进化引擎发现已知修复: ' + evolutionFix })
+        console.log('[Evolution] Applied known fix for:', errMsg.slice(0, 60))
+      }
 
-      // If self-heal mode, try to run diagnostics automatically on errors
+      // ── SELF-HEAL: auto-diagnose + retry ──
       if (selfHealMode && consecutiveErrors >= 2) {
         try {
-          console.log('[Agent Loop] 检测到连续错误，自动触发诊断...')
-          const diagResult = await runDiagnostics({ workspaceDir })
-          steps.push({
-            iteration: i + 1,
-            type: 'diagnose',
-            input: 'Auto-diagnostics triggered due to consecutive errors',
-            output: `Diagnostics: healthy=${diagResult.healthy}, errors=${diagResult.errors.length}`,
-            durationMs: 0,
-          })
-          diagnosticsResult = diagResult
-        } catch (diagErr) {
-          console.error('[Agent Loop] 自动诊断失败:', diagErr)
-        }
+          onEvent?.({ type: 'status', text: 'Self-heal: 自动诊断中...' })
+          diagnosticsResult = await runDiagnostics({ workspaceDir })
+          onEvent?.({ type: 'status', text: 'Self-heal: 诊断完成，重试中...' })
+        } catch { /* diagnostics failure itself is non-critical */ }
       }
-
-      // Feed error back to LLM so it can retry
-      messages.push({
-        role: 'user' as any,
-        content: `[System Error] ${errMsg}. Please retry or try a different approach.`,
-      })
-
+      messages.push({ role: 'user' as any, content: '[System Error] ' + errMsg + '. Please retry with adjusted approach.' })
       if (consecutiveErrors >= maxErrorRetries) {
-        return {
-          success: false,
-          response: `执行过程中遇到 ${consecutiveErrors} 次连续错误。最后错误：${errMsg}`,
-          steps,
-          totalTokens: { prompt: 0, completion: 0 },
-          error: `Max error retries (${maxErrorRetries}) exceeded`,
-          diagnosticsResult,
-        }
+        return { success: false, response: '连续 ' + consecutiveErrors + ' 次错误：' + errMsg, steps, totalTokens: { prompt: 0, completion: 0 }, error: 'Max retries', diagnosticsResult, systemPrompt: systemPromptText, reflectionLog }
       }
     }
   }
 
-  // Max iterations reached without finishing
-  return {
-    success: false,
-    response: `Agent 运行达到最大迭代次数 (${maxIterations}) 但仍未完成。可能需要更复杂的任务分解。`,
-    steps,
-    totalTokens: { prompt: 0, completion: 0 },
-    error: `Max iterations (${maxIterations}) reached`,
-    diagnosticsResult,
-  }
+  return { success: false, response: '达到最大迭代次数 ' + effectiveMaxIterations, steps, totalTokens: { prompt: 0, completion: 0 }, error: 'Max iterations', diagnosticsResult, systemPrompt: systemPromptText, reflectionLog }
 }
 
-/**
- * Run diagnostics and return formatted result (helper for API endpoint)
- */
 export async function runAgentDiagnostics(workspaceDir?: string): Promise<any> {
-  try {
-    const result = await runDiagnostics({ workspaceDir })
-    return {
-      success: true,
-      diagnostics: result,
-    }
-  } catch (err: any) {
-    return {
-      success: false,
-      error: err.message,
-    }
-  }
+  try { const r = await runDiagnostics({ workspaceDir }); return { success: true, diagnostics: r } }
+  catch (e: any) { return { success: false, error: e.message } }
 }

@@ -25,7 +25,7 @@ export const useUIStore = create<UIState>()(
   persist(
     (set, get) => ({
       sidebarOpen: true,
-      rightPanelOpen: false, // 默认隐藏（老板 2026-06-18 确认用不上）
+      rightPanelOpen: false, // 2026-06-20: 默认隐藏，用户可手动打开
       theme: 'dark', // v0.3 spec §30.1 暗色优先
       cmdOpen: false,
       setSidebarOpen: (open) => set({ sidebarOpen: open }),

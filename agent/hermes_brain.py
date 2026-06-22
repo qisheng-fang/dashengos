@@ -183,20 +183,22 @@ class HermesBrain(AgentBrain):
                     timestamp=time.time(),
                 ))
             ai.stream_delta_callback = _on_text_delta
-            ai.tool_start_callback = lambda name, args_preview: _push(
+            # hermes 回调签名: tool_start(id,name,args) 3参数, tool_complete(id,name,args,result) 4参数
+            ai.tool_start_callback = lambda tc_id, tc_name, tc_args: _push(
                 AgentEvent(
                     type=AgentEventType.TOOL_CALL_START,
-                    tool_name=name,
-                    args={"preview": args_preview},
-                    tool_call_id=str(uuid.uuid4()),
+                    tool_name=tc_name,
+                    args=tc_args if isinstance(tc_args, dict) else {"raw": str(tc_args)[:500]},
+                    tool_call_id=tc_id,
                     timestamp=time.time(),
                 )
             )
-            ai.tool_complete_callback = lambda name, result_preview: _push(
+            ai.tool_complete_callback = lambda tc_id, tc_name, tc_args, tc_result: _push(
                 AgentEvent(
                     type=AgentEventType.TOOL_CALL_RESULT,
-                    tool_name=name,
-                    result={"preview": result_preview},
+                    tool_name=tc_name,
+                    result=tc_result if isinstance(tc_result, dict) else {"raw": str(tc_result)[:2000]} if tc_result is not None else None,
+                    tool_call_id=tc_id,
                     timestamp=time.time(),
                 )
             )

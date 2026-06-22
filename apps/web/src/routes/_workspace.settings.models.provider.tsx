@@ -12,7 +12,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Loader2, CheckCircle2, XCircle, Eye, EyeOff, RefreshCw, Key, Trash2 } from 'lucide-react'
+import { Loader2, CheckCircle2, XCircle, Eye, EyeOff, RefreshCw, Key, Trash2, MessageSquare } from 'lucide-react'
 import { useEffect, useState, useCallback } from 'react'
 import { http } from '@/lib/api'
 
@@ -55,7 +55,7 @@ export const Route = createFileRoute('/_workspace/settings/models/provider')({
   component: ProviderPage,
 })
 
-function ProviderPage() {
+export function ProviderPage() {
   const [providers, setProviders] = useState<Provider[]>(PROVIDER_META.map(metaToProvider))
   const [revealId, setRevealId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -64,6 +64,11 @@ function ProviderPage() {
   const [saving, setSaving] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // P2-fix: 对话测试状态
+  const [chatTestId, setChatTestId] = useState<string | null>(null)
+  const [chatTestMsg, setChatTestMsg] = useState('你好')
+  const [chatTestResult, setChatTestResult] = useState<{ content: string; latency: number } | null>(null)
+  const [chatTestLoading, setChatTestLoading] = useState(false)
 
   // Phase A: 启动时拉 server 端 user settings
   const load = useCallback(async () => {
@@ -162,6 +167,41 @@ function ProviderPage() {
       setError(`清除失败: ${(e as Error).message}`)
     } finally {
       setSaving(null)
+    }
+  }
+
+  // P2-fix: 快速对话测试（调用 /api/v1/models/:id/chat，验证模型实际可用）
+  const DEFAULT_MODEL_MAP: Record<string, string> = {
+    ollama: 'ollama:qwen2.5:7b',
+    siliconflow: 'siliconflow:Qwen/Qwen2.5-7B-Instruct',
+    deepseek: 'deepseek:deepseek-chat',
+    openai: 'openai:gpt-4o',
+    anthropic: 'anthropic:claude-3-sonnet',
+  }
+
+  async function chatTest(id: string) {
+    const modelId = DEFAULT_MODEL_MAP[id]
+    if (!modelId) return
+    setChatTestLoading(true)
+    setChatTestResult(null)
+    setError(null)
+    const start = Date.now()
+    try {
+      const res = await http.post<{ message?: { content: string }; done?: boolean; error?: string }>(
+        `/api/v1/models/${encodeURIComponent(modelId)}/chat`,
+        { messages: [{ role: 'user', content: chatTestMsg }], temperature: 0.7 },
+      )
+      setChatTestResult({
+        content: res.message?.content ?? res.error ?? '无返回内容',
+        latency: Date.now() - start,
+      })
+    } catch (e) {
+      setChatTestResult({
+        content: `请求失败: ${(e as Error).message}`,
+        latency: Date.now() - start,
+      })
+    } finally {
+      setChatTestLoading(false)
     }
   }
 
@@ -270,6 +310,52 @@ function ProviderPage() {
                   {testing === p.id ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
                   测试连接
                 </Button>
+              </div>
+
+              {/* P2-fix: 快速对话测试 — 调用 /models/:id/chat 验证模型实际可用 */}
+              <div className="pt-2 border-t border-neutral-800">
+                <button
+                  type="button"
+                  onClick={() => setChatTestId(chatTestId === p.id ? null : p.id)}
+                  className="flex items-center gap-1.5 text-xs text-neutral-400 hover:text-neutral-200 transition-colors"
+                >
+                  <MessageSquare size={12} />
+                  {chatTestId === p.id ? '收起对话测试' : '对话测试'}
+                </button>
+                {chatTestId === p.id && (
+                  <div className="mt-2 space-y-2">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={chatTestMsg}
+                        onChange={(e) => setChatTestMsg(e.target.value)}
+                        placeholder="输入测试消息..."
+                        className="flex-1 bg-neutral-800 border border-neutral-700 rounded h-8 px-2 text-xs text-neutral-100"
+                        onKeyDown={(e) => { if (e.key === 'Enter') chatTest(p.id) }}
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => chatTest(p.id)}
+                        disabled={chatTestLoading || !p.hasKey}
+                        data-testid={`chat-test-${p.id}`}
+                      >
+                        {chatTestLoading ? <Loader2 size={12} className="animate-spin" /> : '发送'}
+                      </Button>
+                    </div>
+                    {!p.hasKey && (
+                      <div className="text-[10px] text-neutral-500">请先配置凭证</div>
+                    )}
+                    {chatTestResult && (
+                      <div className="bg-neutral-800/50 border border-neutral-700 rounded p-2 text-xs space-y-1">
+                        <div className="flex items-center justify-between text-[10px] text-neutral-500">
+                          <span>模型: {DEFAULT_MODEL_MAP[p.id]}</span>
+                          <span>{chatTestResult.latency}ms</span>
+                        </div>
+                        <div className="text-neutral-200 whitespace-pre-wrap">{chatTestResult.content}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

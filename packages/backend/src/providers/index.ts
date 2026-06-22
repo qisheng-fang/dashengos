@@ -61,6 +61,10 @@ export function listProviders(): ProviderListItem[] {
 }
 
 /** 取活跃 provider (按 LLM_PROVIDER env) */
+export function getProviders(): ProviderProfile[] {
+  return Array.from(PROVIDERS.values())
+}
+
 export function getActiveProvider(): ProviderProfile {
   const name = process.env.LLM_PROVIDER || 'siliconflow'
   const p = PROVIDERS.get(name)

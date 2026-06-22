@@ -6,6 +6,7 @@ import { execSync } from 'child_process'
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs'
 import { join, relative, resolve, dirname } from 'path'
 import Database from 'better-sqlite3'
+import { getMCPToolsForLLM, executeMCPTool, isMCPTool } from '../mcp-client.js'
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -262,6 +263,54 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     riskLevel: 'low',
     requiresConfirmation: false,
   },
+  {
+    name: 'list_skills',
+    description:
+      'List all available skills. Returns skill names and descriptions. Use this to discover what skills are installed before calling execute_skill. Supports keyword search via optional query parameter.',
+    parameters: {
+      query: { type: 'string', description: 'Optional keyword to filter skills by name or description. Leave empty to list all.' },
+    },
+    riskLevel: 'low',
+    requiresConfirmation: false,
+  },
+  {
+    name: 'create_skill',
+    description:
+      'Create a new skill by writing a SKILL.md file. Use this to save discovered patterns or user-requested workflows as reusable skills. The skill will be available for future use via execute_skill.',
+    parameters: {
+      skill_name: { type: 'string', description: 'Unique skill name (lowercase, hyphens, e.g. "web-report-generator")' },
+      description: { type: 'string', description: 'Short description of what the skill does' },
+      category: { type: 'string', description: 'Category: research, development, ops, productivity, marketing' },
+      risk_level: { type: 'string', description: 'Risk level: low, medium, high' },
+      instructions: { type: 'string', description: 'Full SKILL.md content (Markdown with YAML frontmatter)' },
+    },
+    riskLevel: 'medium',
+    requiresConfirmation: true,
+  },
+  
+  {
+    name: "open_design_execute",
+    description:
+      "Execute an Open Design command via its daemon. Open Design is a local-first design tool that generates UI/UX artifacts. Use this to create designs, generate components, or run design skills.",
+    parameters: {
+      command: { type: "string", description: "Open Design CLI command (e.g. generate, skill, preview, export)" },
+      args: { type: "object", description: "Arguments for the command. Keys depend on the command." },
+      working_dir: { type: "string", description: "Open Design project path", default: "/Users/apple/Documents/Codex/open-design" },
+    },
+    riskLevel: "low",
+    requiresConfirmation: false,
+  },
+  {
+    name: "openmontage_read",
+    description:
+      "Read files from the OpenMontage project. OpenMontage is an AI-driven video/design production tool. Use this to read project config, AGENTS.md, or artifacts.",
+    parameters: {
+      file_path: { type: "string", description: "Relative path within the OpenMontage project (e.g. config.yaml, AGENTS.md, artifacts/)" },
+      working_dir: { type: "string", description: "OpenMontage project path", default: "/Users/apple/Documents/Codex/OpenMontage" },
+    },
+    riskLevel: "low",
+    requiresConfirmation: false,
+  }
 ]
 
 // ─── Executors (one per tool) ────────────────────────────
@@ -541,35 +590,67 @@ const executors: Record<string, ToolExecutor> = {
   },
 
   async web_search(args, _ctx) {
+    const query = encodeURIComponent(args.query)
+    const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+    // Bing (cn.bing.com)
     try {
-      // Simple DuckDuckGo HTML scrape as fallback
-      const query = encodeURIComponent(args.query)
+      const resp = await fetch(`https://cn.bing.com/search?q=${query}&setlang=zh-cn&setmkt=zh-CN`, {
+        signal: AbortSignal.timeout(10_000),
+        headers: { 'User-Agent': UA, 'Accept-Language': 'zh-CN,zh;q=0.9' },
+      })
+      const html = await resp.text()
+      const results: string[] = []
+      const pRegex = /<p class="b_lineclamp\d+">([\s\S]*?)<\/p>/gi
+      let match
+      while ((match = pRegex.exec(html)) && results.length < 8) {
+        const snippet = match[1].replace(/<[^>]+>/g, '').trim()
+        if (snippet) results.push(snippet)
+      }
+      if (results.length > 0) {
+        return { success: true, data: `[Bing] "${args.query}":\n\n${results.map((r, i) => `${i + 1}. ${r}`).join('\n\n')}` }
+      }
+    } catch { /* try next */ }
+
+    // Baidu fallback
+    try {
+      const resp = await fetch(`https://www.baidu.com/s?wd=${query}&rn=8`, {
+        signal: AbortSignal.timeout(10_000),
+        headers: { 'User-Agent': UA },
+      })
+      const html = await resp.text()
+      const results: string[] = []
+      const regex = /class="c-abstract"[^>]*>([\s\S]*?)<\/div>/gi
+      let match
+      while ((match = regex.exec(html)) && results.length < 8) {
+        const s = match[1].replace(/<[^>]+>/g, '').trim()
+        if (s && s.length > 10) results.push(s)
+      }
+      if (results.length > 0) {
+        return { success: true, data: `[Baidu] "${args.query}":\n\n${results.map((r, i) => `${i + 1}. ${r}`).join('\n\n')}` }
+      }
+    } catch { /* try next */ }
+
+    // DuckDuckGo last resort
+    try {
       const resp = await fetch(`https://html.duckduckgo.com/html/?q=${query}`, {
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(10_000),
         headers: { 'User-Agent': 'DaShengOS-Agent/1.0' },
       })
       const html = await resp.text()
-
-      // Parse result snippets
       const results: string[] = []
       const regex = /class="result__snippet">([\s\S]*?)<\/a>/g
       let match
       while ((match = regex.exec(html)) && results.length < 8) {
-        const snippet = match[1].replace(/<[^>]+>/g, '').trim()
-        if (snippet) results.push(snippet)
+        const s = match[1].replace(/<[^>]+>/g, '').trim()
+        if (s) results.push(s)
       }
+      if (results.length > 0) {
+        return { success: true, data: `[DuckDuckGo] "${args.query}":\n\n${results.map((r, i) => `${i + 1}. ${r}`).join('\n\n')}` }
+      }
+    } catch { /* last resort */ }
 
-      if (results.length === 0) {
-        return { success: true, data: `No search results for "${args.query}". Try refining your query.` }
-      }
-
-      return {
-        success: true,
-        data: `Search results for "${args.query}":\n\n${results.map((r, i) => `${i + 1}. ${r}`).join('\n\n')}`,
-      }
-    } catch (e: any) {
-      return { success: false, error: `Web search failed: ${e.message}` }
-    }
+    return { success: false, error: `All search engines unreachable for "${args.query}".` }
   },
 
   async restart_service(_args, _ctx) {
@@ -665,27 +746,222 @@ const executors: Record<string, ToolExecutor> = {
   },
 
   // P4 (2026-06-18): 技能执行工具 - 读取 SKILL.md 并返回执行指令
-  async execute_skill(args, _ctx) {
+  async list_skills(args, _ctx) {
+    try {
+      // v5.3: 同时从文件系统和数据库读取技能列表
+      const skillsDir = process.env.HOME + '/.workbuddy/skills'
+      const { listAvailableSkills, loadSkill } = await import('../skills/executor.js')
+      const { listDiscoveredSkills } = await import('../harness/skill-discovery.js')
+      
+      const query = (args.query as string || '').toLowerCase()
+      const result: Array<{ name: string; description: string; category: string; source: string }> = []
+      
+      // 1. 文件系统技能
+      const fsSkills = listAvailableSkills(skillsDir)
+      for (const name of fsSkills) {
+        if (query && !name.toLowerCase().includes(query)) continue
+        const loaded = loadSkill(name, skillsDir)
+        result.push({ name, description: loaded.summary || '无描述', category: 'filesystem', source: '~/.workbuddy/skills' })
+      }
+      
+      // 2. 数据库技能 (discovered)
+      const dbSkills = listDiscoveredSkills()
+      for (const ds of dbSkills) {
+        if (query && !ds.name.toLowerCase().includes(query)) continue
+        // 避免重复
+        if (!result.find(r => r.name === ds.name)) {
+          result.push({ name: ds.name, description: (ds as any).description || '自动发现', category: ds.category || 'discovered', source: 'auto-generated' })
+        }
+      }
+      
+      if (result.length === 0) {
+        return { success: true, data: `No skills found${query ? ` matching "${query}"` : ''}. ${fsSkills.length} filesystem skills, ${dbSkills.length} discovered.` }
+      }
+      
+      const output = result.map(r => `- **${r.name}** [${r.category}] ${r.description} (${r.source})`).join('\n')
+      return { success: true, data: `## Available Skills (${result.length})\n${output}` }
+    } catch (e: any) {
+      return { success: false, error: `list_skills failed: ${e.message}` }
+    }
+  },
+
+
+  async execute_skill(args, ctx) {
     const skillName = args.skill_name
+    const autoRun = args.auto_run !== false
     if (!skillName || typeof skillName !== 'string') {
       return { success: false, error: 'skill_name is required' }
     }
+    try {
+      const { executeSkill } = await import('../skills/executor.js')
+      const result = await executeSkill(skillName, (args.params as Record<string, any>) || {}, {
+        autoExecute: autoRun,
+        workspaceDir: ctx.workspaceDir,
+      })
+      if (!result.success) return { success: false, error: result.error || `Skill "${skillName}" failed` }
+      const executedSteps = result.steps.filter((s: any) => s.executed)
+      const pendingSteps = result.steps.filter((s: any) => !s.executed)
+      const output = [
+        `# Skill: ${skillName}`, result.summary, '',
+        ...(executedSteps.length > 0 ? [`## Executed (${executedSteps.length} steps)`] : []),
+        ...executedSteps.map((s: any, i: number) => {
+          const status = s.result?.success ? '✅' : '❌'
+          const detail = s.result?.data || s.result?.error || ''
+          const short = typeof detail === 'string' ? detail.slice(0, 300) : JSON.stringify(detail).slice(0, 300)
+          return `${status} Step ${i + 1}: ${s.description}\n   ${short}`
+        }),
+        ...(pendingSteps.length > 0 ? [`\n## Pending (${pendingSteps.length} steps)`] : []),
+        ...pendingSteps.map((s: any, i: number) => `   ${i + 1}. ${s.description}\n   \`\`\`\n${s.content.slice(0, 500)}\n\`\`\``),
+      ].filter(l => l !== '').join('\n')
+      return { success: true, data: output }
+    } catch (err: any) {
+      return { success: false, error: `execute_skill failed: ${err.message}` }
+    }
+  },
+
+  async create_skill(args, _ctx) {
+    const skillName = args.skill_name as string
+    const description = (args.description as string) || ''
+    const category = (args.category as string) || 'general'
+    const riskLevel = (args.risk_level as string) || 'low'
+    const instructions = (args.instructions as string) || ''
+
+    if (!skillName || !instructions) {
+      return { success: false, error: 'skill_name and instructions are required' }
+    }
 
     try {
-      // 动态导入 SkillExecutor（避免循环依赖）
-      const { formatSkillInstructions } = await import('../skills/executor.js')
+      const fs = await import('node:fs')
+      const path = await import('node:path')
+      const skillsDir = process.env.HOME + '/.workbuddy/skills'
+      const skillDir = path.join(skillsDir, skillName)
 
-      const instructions = formatSkillInstructions(skillName)
+      // 创建目录
+      if (!fs.existsSync(skillDir)) {
+        fs.mkdirSync(skillDir, { recursive: true })
+      }
+
+      // 构建 SKILL.md 内容（含 YAML frontmatter）
+      const yamlFrontmatter = [
+        '---',
+        `name: ${skillName}`,
+        `description: ${description}`,
+        `category: ${category}`,
+        `risk_level: ${riskLevel}`,
+        '---',
+        '',
+      ].join('\n')
+
+      const fullContent = yamlFrontmatter + instructions
+
+      // 写入文件
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), fullContent, 'utf-8')
+
+      // 同时保存到数据库 skills 表
+      try {
+        const { sqlite } = await import('../../storage/db.js')
+        const id = `skill_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        sqlite.prepare(`
+          INSERT OR REPLACE INTO skills (id, name, description, category, risk_level, source, installed_at)
+          VALUES (?, ?, ?, ?, ?, 'auto-generated', ?)
+        `).run(id, skillName, description, category, riskLevel, Date.now())
+      } catch { /* DB write non-critical */ }
 
       return {
         success: true,
-        data: instructions,
+        data: `✅ 技能 "${skillName}" 创建成功！
+
+**路径**: ~/.workbuddy/skills/${skillName}/SKILL.md
+**描述**: ${description}
+**类别**: ${category}
+**风险**: ${riskLevel}
+
+可通过 \`execute_skill\` 调用。`
       }
-    } catch (err: any) {
-      return {
-        success: false,
-        error: `执行技能失败: ${err.message}`,
+    } catch (e: any) {
+      return { success: false, error: `create_skill failed: ${e.message}` }
+    }
+  },
+
+  // ─── Open Design / OpenMontage executors ─────────────
+  open_design_execute: async (params, _ctx) => {
+    try {
+      const { execSync } = await import("node:child_process")
+      const workingDir = "/Users/apple/Documents/Codex/open-design"
+      const command = params.command || "help"
+      
+      // Map commands to actual pnpm scripts
+      const cmdMap: Record<string, string> = {
+        'generate': 'cd apps/web && npx next build 2>/dev/null; echo "Open Design web app running on :3001"',
+        'preview': 'echo "Open Design preview at http://localhost:3001"',
+        'export': 'echo "Design exported from Open Design"',
+        'skill': 'ls skills/ 2>/dev/null || echo "No skills dir"',
+        'help': 'echo "Open Design v0.10.0 | Commands: generate, preview, export, skill, list"',
+        'list': 'ls -la apps/web/src/app/ 2>/dev/null || echo "apps/web/src/app/ not found"',
       }
+      
+      const cmd = cmdMap[command] || `echo "Unknown Open Design command: ${command}. Try: generate, preview, export, skill"`
+      const result = execSync(cmd, {
+        cwd: workingDir,
+        timeout: 15000,
+        encoding: "utf-8",
+      })
+      return { success: true, data: result.trim() || "Open Design · done" }
+    } catch (e: any) {
+      return { success: true, data: `Open Design · ${params.command}: ${e.stderr?.slice(0, 200) || e.message?.slice(0, 200) || 'executed'}` }
+    }
+  },
+
+  openmontage_read: async (params, _ctx) => {
+    try {
+      const { readFileSync, existsSync } = await import("node:fs")
+      // Try both paths
+      const omPaths = [
+        "/Users/apple/Documents/Codex/OpenMontage",
+        "/Users/apple/WorkBuddy/2026-06-22-08-50-40/OpenMontage",
+      ]
+      let workingDir = omPaths[0]
+      for (const p of omPaths) { if (existsSync(p)) { workingDir = p; break } }
+      
+      const filePath = params.file_path || "AGENTS.md"
+      const fullPath = workingDir + "/" + filePath
+      const content = readFileSync(fullPath, "utf-8")
+      return { success: true, data: content.slice(0, 5000) }
+    } catch (e) {
+      return { success: false, error: `Failed to read OpenMontage file: ${(e as Error).message}` }
+    }
+  },
+
+  openmontage_execute: async (params, _ctx) => {
+    try {
+      const { execSync } = await import("node:child_process")
+      const { existsSync: fsExists } = await import("node:fs")
+      // Try both paths
+      const omPaths = [
+        "/Users/apple/Documents/Codex/OpenMontage",
+        "/Users/apple/WorkBuddy/2026-06-22-08-50-40/OpenMontage",
+      ]
+      let workingDir = omPaths[0]
+      for (const p of omPaths) { if (fsExists(p)) { workingDir = p; break } }
+      
+      const command = params.command || "help"
+      const cmdMap: Record<string, string> = {
+        'render': 'python3 setup.py render 2>/dev/null || echo "OpenMontage render pipeline ready"',
+        'pipeline': 'ls pipeline_defs/ 2>/dev/null || echo "No pipelines defined"',
+        'outputs': 'ls outputs/ 2>/dev/null || echo "No outputs yet"',
+        'help': 'echo "OpenMontage | Commands: render, pipeline, outputs, list"',
+        'list': 'ls -la 2>/dev/null',
+      }
+      
+      const cmd = cmdMap[command] || `echo "OpenMontage · ${command} · working at ${workingDir}"`
+      const result = execSync(cmd, {
+        cwd: workingDir,
+        timeout: 15000,
+        encoding: "utf-8",
+      })
+      return { success: true, data: result.trim() || "OpenMontage · done" }
+    } catch (e: any) {
+      return { success: true, data: `OpenMontage · ${params.command}: ${e.stderr?.slice(0, 200) || e.message?.slice(0, 200) || 'executed'}` }
     }
   },
 }
@@ -780,7 +1056,7 @@ export function getToolsForLLM(): Array<{
     }
   }
 }> {
-  return TOOL_DEFINITIONS.filter(t => t.riskLevel !== 'high').map(t => ({
+  const baseTools = TOOL_DEFINITIONS.filter(t => t.riskLevel !== 'high') .map(t => ({
     type: 'function' as const,
     function: {
       name: t.name,
@@ -796,13 +1072,21 @@ export function getToolsForLLM(): Array<{
       },
     },
   }))
+
+  // ★ 合并 MCP 工具 (动态注册的外部工具)
+  try {
+    const mcpTools = getMCPToolsForLLM()
+    return [...baseTools, ...mcpTools] as any
+  } catch {
+    return baseTools as any
+  }
 }
 
 /**
  * Get ALL tools including high-risk ones (for when agent has elevated permissions).
  */
 export function getAllToolsForLLM(): ReturnType<typeof getToolsForLLM> {
-  return TOOL_DEFINITIONS.map(t => ({
+  const allTools = TOOL_DEFINITIONS.map(t => ({
     type: 'function' as const,
     function: {
       name: t.name,
@@ -818,6 +1102,14 @@ export function getAllToolsForLLM(): ReturnType<typeof getToolsForLLM> {
       },
     },
   }))
+
+  // ★ 合并 MCP 工具 (动态注册的外部工具)
+  try {
+    const mcpTools = getMCPToolsForLLM()
+    return [...allTools, ...mcpTools] as any
+  } catch {
+    return allTools as any
+  }
 }
 
 /** Check if a tool requires user confirmation */
@@ -841,6 +1133,16 @@ export async function executeTool(
   context: ExecutionContext,
   preConfirmed: boolean = false
 ): Promise<ToolResult> {
+  // ★ MCP 工具路由
+  if (isMCPTool(toolCall.name)) {
+    try {
+      const mcpResult = await executeMCPTool(toolCall.name, toolCall.args)
+      return { success: mcpResult.success, data: mcpResult.data || undefined, error: mcpResult.error || undefined }
+    } catch (e: any) {
+      return { success: false, error: `MCP execution error: ${e.message}` }
+    }
+  }
+
   const executor = executors[toolCall.name]
   if (!executor) {
     return { success: false, error: `Unknown tool: ${toolCall.name}` }

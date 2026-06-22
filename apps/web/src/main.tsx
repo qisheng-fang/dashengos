@@ -30,7 +30,17 @@ import { VisualizationsPage } from '@/routes/_workspace.visualizations'
 import { DiagnosticsPage } from '@/routes/_workspace.diagnostics'  // D2 · 仿 Hermes doctor (2026-06-17)
 import { OAuthManager } from '@/screens/OAuthManager'  // D6-3 (2026-06-18) 4 平台 OAuth 管理页
 import { SkillsMarket } from '@/screens/SkillsMarket'
-import { Workflows } from '@/screens/Workflows'
+import { BrowserAutomation } from '@/screens/BrowserAutomation'
+// P0-fix: Workflows 组件由 Studio 页面内部引用，不再直接用于 /workflows 路由
+// import { Workflows } from '@/screens/Workflows'
+import { ModelsLayout } from '@/routes/_workspace.settings.models'
+import { TextModelsPage } from '@/routes/_workspace.settings.models.text'
+import { MultimodalModelsPage } from '@/routes/_workspace.settings.models.multimodal'
+import { ProviderPage } from '@/routes/_workspace.settings.models.provider'
+import { CustomModelManager } from '@/screens/CustomModelManager'  // 自定义模型管理页 (2026-06-19)
+import { OpenDesign } from "@/screens/OpenDesign"
+import { OpenMontage } from "@/screens/OpenMontage"
+import { AdminPage } from '@/routes/_workspace.settings.admin'
 
 // ---- 路由树 ----
 const rootRoute = createRootRoute({
@@ -50,23 +60,39 @@ const wsStudio = createRoute({ getParentRoute: () => wsLayout, path: '/studio', 
 const wsFiles = createRoute({ getParentRoute: () => wsLayout, path: '/files', component: () => React.createElement(FileBrowser) })
 const wsMcp = createRoute({ getParentRoute: () => wsLayout, path: '/mcp', component: () => React.createElement(McpManager) })
 const wsSettings = createRoute({ getParentRoute: () => wsLayout, path: '/settings', component: () => React.createElement(Settings) })
-const wsSocialCookies = createRoute({ getParentRoute: () => wsLayout, path: '/settings/social-cookies', component: () => React.createElement(SocialCookiesPage) })
-const wsAutomations = createRoute({ getParentRoute: () => wsLayout, path: '/settings/automations', component: () => React.createElement(AutomationPage) })
-const wsMemory = createRoute({ getParentRoute: () => wsLayout, path: '/settings/memory', component: () => React.createElement(MemoryPage) })
-const wsLearnings = createRoute({ getParentRoute: () => wsLayout, path: '/settings/learnings', component: () => React.createElement(LearningsPage) })
+const wsSocialCookies = createRoute({ getParentRoute: () => wsSettings, path: 'social-cookies', component: () => React.createElement(SocialCookiesPage) })
+const wsAutomations = createRoute({ getParentRoute: () => wsSettings, path: 'automations', component: () => React.createElement(AutomationPage) })
+const wsMemory = createRoute({ getParentRoute: () => wsSettings, path: 'memory', component: () => React.createElement(MemoryPage) })
+const wsLearnings = createRoute({ getParentRoute: () => wsSettings, path: 'learnings', component: () => React.createElement(LearningsPage) })
 const wsSkills = createRoute({ getParentRoute: () => wsLayout, path: '/skills', component: () => React.createElement(SkillsMarket) })
+const wsBrowser = createRoute({ getParentRoute: () => wsLayout, path: '/browser', component: () => React.createElement(BrowserAutomation) })
 const wsSkill = createRoute({ getParentRoute: () => wsLayout, path: '/skills/$id', component: () => React.createElement(SkillDetail) })
 const wsDocuments = createRoute({ getParentRoute: () => wsLayout, path: '/documents', component: () => React.createElement(Documents) })
 const wsVisualizations = createRoute({ getParentRoute: () => wsLayout, path: '/visualizations', component: () => React.createElement(VisualizationsPage) })
-const wsWorkflows = createRoute({ getParentRoute: () => wsLayout, path: '/workflows', component: () => React.createElement(Workflows) })
-const wsDiagnostics = createRoute({ getParentRoute: () => wsLayout, path: '/diagnostics', component: () => React.createElement(DiagnosticsPage) })  // D2 · 仿 Hermes doctor (2026-06-17)
-const wsOAuth = createRoute({ getParentRoute: () => wsLayout, path: '/settings/oauth', component: () => React.createElement(OAuthManager) })  // D6-3 (2026-06-18) 4 平台 OAuth 管理页
+const wsOpenDesign = createRoute({ getParentRoute: () => wsLayout, path: "/open-design", component: () => React.createElement(OpenDesign) })
+const wsOpenMontage = createRoute({ getParentRoute: () => wsLayout, path: "/openmontage", component: () => React.createElement(OpenMontage) })
+const wsWorkflows = createRoute({
+  getParentRoute: () => wsLayout,
+  path: '/workflows',
+  // P0-fix (2026-06-18): /workflows 重定向到 /studio (Studio 页面内集成模板 Tab)
+  beforeLoad: () => { throw new Error('redirect') },
+  loader: () => { window.location.href = '/studio' },
+  component: () => React.createElement(Studio),
+})
+const wsDiagnostics = createRoute({ getParentRoute: () => wsSettings, path: 'diagnostics', component: () => React.createElement(DiagnosticsPage) })  // D2 · 仿 Hermes doctor (2026-06-17) — P1-fix: 移入 Settings 子路由 /settings/diagnostics
+const wsOAuth = createRoute({ getParentRoute: () => wsSettings, path: 'oauth', component: () => React.createElement(OAuthManager) })  // D6-3 (2026-06-18) 4 平台 OAuth 管理页
+const wsModels = createRoute({ getParentRoute: () => wsSettings, path: 'models', component: () => React.createElement(ModelsLayout) })
+const wsModelsText = createRoute({ getParentRoute: () => wsModels, path: 'text', component: () => React.createElement(TextModelsPage) })
+const wsModelsMultimodal = createRoute({ getParentRoute: () => wsModels, path: 'multimodal', component: () => React.createElement(MultimodalModelsPage) })
+const wsModelsProvider = createRoute({ getParentRoute: () => wsModels, path: 'provider', component: () => React.createElement(ProviderPage) })
+const wsModelsCustom = createRoute({ getParentRoute: () => wsModels, path: 'custom', component: () => React.createElement(CustomModelManager) })  // 自定义模型 CRUD (2026-06-19)
+const wsAdmin = createRoute({ getParentRoute: () => wsSettings, path: 'admin', component: () => React.createElement(AdminPage) })
 
 const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login', component: () => React.createElement(Login) })
 const errorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/error/$code', component: () => React.createElement(ErrorPage) })
 
 const routeTree = rootRoute.addChildren([
-  wsLayout.addChildren([wsIndex, wsAgents, wsChat, wsStudio, wsFiles, wsMcp, wsSettings, wsSocialCookies, wsAutomations, wsMemory, wsLearnings, wsSkills, wsSkill, wsDocuments, wsVisualizations, wsWorkflows, wsDiagnostics, wsOAuth]),
+  wsLayout.addChildren([wsIndex, wsAgents, wsChat, wsStudio, wsFiles, wsMcp, wsSettings, wsSocialCookies, wsAutomations, wsMemory, wsLearnings, wsSkills, wsBrowser, wsSkill, wsDocuments, wsVisualizations, wsOpenDesign, wsOpenMontage, wsWorkflows, wsDiagnostics, wsOAuth, wsModels, wsModelsText, wsModelsMultimodal, wsModelsProvider, wsModelsCustom, wsAdmin]),
   loginRoute,
   errorRoute,
 ])

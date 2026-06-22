@@ -7,22 +7,19 @@ import { Link, Outlet, useLocation } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
 import { http } from '@/lib/api'
 import { useAuthStore } from '@/lib/auth-store'
-import { User, Cpu, Key, Shield, ScrollText, Settings as SettingsIcon, Loader2, Crown, Cookie, Timer, Brain, Lightbulb, Stethoscope, Plug } from 'lucide-react'
+import { Cpu, Plug, Loader2, Crown, Cookie, Timer, Brain, Lightbulb, Stethoscope, Shield, SlidersHorizontal } from 'lucide-react'
 
 const SUB_PAGES = [
   // Track C.3 · 模型路由 拆 3 子页 (text/multimodal/provider)
   { to: '/settings/models/text', label: '模型路由', icon: Cpu, exact: false },
+  { to: '/settings/models/custom', label: '自定义模型', icon: SlidersHorizontal, exact: false },
   { to: '/settings/oauth', label: '外部平台 OAuth', icon: Plug },  // D6-3 (2026-06-18)
   { to: '/settings/social-cookies', label: '社交媒体凭证', icon: Cookie },
   { to: '/settings/automations', label: '定时任务', icon: Timer },
   { to: '/settings/memory', label: '记忆管理', icon: Brain },
   { to: '/settings/learnings', label: '学习记录', icon: Lightbulb },
-  { to: '/diagnostics', label: '系统诊断', icon: Stethoscope, external: true },  // D2 · 仿 Hermes doctor (2026-06-17)
-  { to: '/settings/profile', label: '个人资料', icon: User },
-  { to: '/settings/api-keys', label: 'API Key', icon: Key },
-  { to: '/settings/sandbox', label: '沙箱配额', icon: Shield },
-  { to: '/settings/audit', label: '审计日志', icon: ScrollText },
-  { to: '/settings/advanced', label: '高级', icon: SettingsIcon },
+  { to: '/settings/diagnostics', label: '系统诊断', icon: Stethoscope },  // D2 · 仿 Hermes doctor (2026-06-17)
+  { to: '/settings/admin', label: 'Admin 审计', icon: Shield },  // Admin 审计日志 + Secret 管理
 ]
 
 interface TierInfo {
@@ -126,10 +123,12 @@ export function Settings() {
         </nav>
 
         {/* Track C.3 · 模型路由 Outlet (3 子路由: text/multimodal/provider) */}
-        <Outlet />
+        <div>
+          <Outlet />
 
-        {/* 套餐 & 用量 (Track C.3 保留, 跟模型路由并列) */}
-        <Card className="bg-neutral-900/50 border-neutral-800 mt-6">
+          {/* 套餐 & 用量 — 只在 /settings 根路径显示 */}
+          {location.pathname === '/settings' && (
+            <Card className="bg-neutral-900/50 border-neutral-800 mt-6">
           <CardHeader>
             <CardTitle className="text-lg text-neutral-100">套餐 & 用量</CardTitle>
           </CardHeader>
@@ -195,6 +194,8 @@ export function Settings() {
             )}
           </CardContent>
         </Card>
+          )}
+        </div>
       </div>
     </div>
   )

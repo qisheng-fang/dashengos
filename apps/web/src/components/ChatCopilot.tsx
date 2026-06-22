@@ -98,7 +98,7 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
   const [stream, setStream] = useState<StreamState>(INITIAL_STREAM_STATE)
   const [showCmds, setShowCmds] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
-  const { addChatMessage, updateLastMessage, setActiveIntent, clearCurrentChat, activeIntent, conversations, activeConversationId, newConversation } =
+  const { addChatMessage, updateLastMessage, setActiveIntent, clearCurrentChat, activeIntent, conversations, activeConversationId, newConversation, setWelcomeMessage, syncConversationsFromBackend } =
     useAppStore()
   
   // ★ 关键修复：直接从 conversations 计算消息列表，而不是用 getter（getter 不触发 React 重渲染）
@@ -108,6 +108,31 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const statusRotateRef = useRef(0)
+
+  // 🔄 模型选择器状态
+  const [selectedModel, setSelectedModel] = useState<{ modelId: string; providerName: string; label: string } | null>(null)
+  const [availableModels, setAvailableModels] = useState<Array<{ id: string; label: string; modelId: string; providerName: string; isCustom: boolean }>>([])
+  const [showModelMenu, setShowModelMenu] = useState(false)
+
+  // 加载可用模型列表
+  useEffect(() => {
+    const token = useAuthStore.getState().accessToken
+    if (!token) return
+    fetch('/api/models', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(res => res.json())
+      .then(data => {
+        const all = [...(data.builtIn || []), ...(data.custom || [])]
+        setAvailableModels(all)
+        if (data.active && !selectedModel) {
+          setSelectedModel({ modelId: data.active.modelId, providerName: data.active.providerName, label: data.active.label })
+        } else if (all.length > 0 && !selectedModel) {
+          setSelectedModel({ modelId: all[0].modelId, providerName: all[0].providerName, label: all[0].label })
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   // 从当前会话取 threadId
   const threadIdRef = useRef<string>(currentConv?.threadId ?? `cc_${Date.now().toString(36)}`)
@@ -137,6 +162,39 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
     inputRef.current?.focus()
   }, [])
 
+  // 🔄 动态欢迎语：从后端加载可配置的欢迎语
+  useEffect(() => {
+    const token = useAuthStore.getState().accessToken
+    if (!token) return
+    fetch('/api/v1/chat/welcome', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.copilot) {
+          setWelcomeMessage(data.copilot)
+        } else if (data.content) {
+          setWelcomeMessage(data.content)
+        }
+      })
+      .catch(() => {
+        // 静默失败，使用 store 中的默认欢迎语
+      })
+  }, [])
+
+  // 🔄 初始化时从后端加载对话历史（保障跨刷新持久化）
+  useEffect(() => {
+    const token = useAuthStore.getState().accessToken
+    if (!token) return
+    syncConversationsFromBackend().then(() => {
+      const store = useAppStore.getState()
+      const activeConv = store.conversations.find(c => c.id === store.activeConversationId)
+      if (activeConv && activeConv.messages.length === 0 && activeConv.threadId) {
+        store.loadMessagesForConversation(activeConv.id)
+      }
+    }).catch(() => {})
+  }, [])
+
   // ✅ 挂载守卫：确保存在活跃会话（修复 activeConversationId=null 导致消息静默丢失）
   useEffect(() => {
     if (!activeConversationId || conversations.length === 0) {
@@ -151,10 +209,13 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
     const text = input.trim()
     if (!text || running) return
 
-    // ✅ 守卫：确保存在活跃会话（修复 activeConversationId=null 时消息被静默丢弃的问题）
-    if (!activeConversationId || conversations.length === 0) {
-      newConversation()
+    let currentId = activeConversationId
+    let currentConvForSend = currentId ? conversations.find((c) => c.id === currentId) : undefined
+    if (!currentConvForSend || !currentConvForSend.threadId) {
+      currentId = newConversation()
+      currentConvForSend = useAppStore.getState().conversations.find((c) => c.id === currentId)
     }
+    const threadIdForSend = currentConvForSend?.threadId || `cc_${Date.now().toString(36)}`
 
     setInput('')
     setShowCmds(false)
@@ -181,12 +242,13 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
     addChatMessage({ role: 'assistant', content: '' })
 
     try {
-      const history = chatHistory
+      const store = useAppStore.getState()
+      const history = (store.conversations.find((c) => c.id === currentId)?.messages ?? chatHistory)
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .slice(-20)
         .map((m) => ({ role: m.role, content: m.content }))
 
-      await streamChat(text, history, abortRef.current.signal)
+      await streamChat(text, history, threadIdForSend, abortRef.current.signal)
 
       // 流结束后检测意图
       const autoIntent = detectIntentFromResponse(stream.content)
@@ -217,11 +279,11 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
    * - done: 结束标记
    * - error: 错误处理
    */
-  async function streamChat(message: string, history: Array<{ role: string; content: string }>, signal: AbortSignal) {
+  async function streamChat(message: string, history: Array<{ role: string; content: string }>, threadId: string, signal: AbortSignal) {
     const token = useAuthStore.getState().accessToken || ''
 
     const baseUrl = import.meta.env.VITE_API_URL || ''  // 空串 = 走 Vite proxy (/api → :8000)
-    let fullContent = stream.content  // 从当前流状态开始（支持断点续传）
+    let fullContent = ''  // ★ 每次新对话从空开始，不继承上轮内容
 
     try {
       const response = await fetch(`${baseUrl}/api/v1/chat/stream`, {
@@ -233,14 +295,17 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
         },
         body: JSON.stringify({
           message,
-          threadId: threadIdRef.current,
+          threadId,
           history,
+          model: selectedModel?.modelId || undefined,
+          providerName: selectedModel?.providerName || undefined,
         }),
         signal,
       })
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
+        const text = await response.text().catch(() => '')
+        throw new Error(`HTTP ${response.status} ${text || response.statusText}`.trim())
       }
 
       if (!response.body) throw new Error('No response body')
@@ -313,8 +378,9 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
 
               case 'error':
                 console.error('[Stream Error]', data.e)
-                setStream((s) => ({ ...s, error: data.e || '未知错误' }))
-                break
+                updateLastMessage(`AI 返回错误：${data.e || '未知错误'}`)
+                setStream((s) => ({ ...s, error: data.e || '未知错误', streaming: false, done: true }))
+                return
 
               case 'done':
                 // 流结束
@@ -536,6 +602,72 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
             </button>
           </div>
         )}
+
+        {/* 🔄 模型选择器（WorkBuddy 风格：输入框上方下拉） */}
+        <div className="flex items-center gap-2 mb-2">
+          <div className="relative">
+            <button
+              onClick={() => setShowModelMenu(!showModelMenu)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-neutral-900 border border-neutral-800 text-xs text-neutral-400 hover:text-neutral-300 hover:border-neutral-700 transition-colors"
+            >
+              <span className="text-neutral-500">模型</span>
+              <span className="text-neutral-300 max-w-[180px] truncate">
+                {selectedModel?.label || '默认'}
+              </span>
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {showModelMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowModelMenu(false)} />
+                <div className="absolute bottom-full left-0 mb-1 z-50 w-72 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl overflow-hidden">
+                  <div className="p-1 max-h-64 overflow-y-auto">
+                    <div className="px-2 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">内置模型</div>
+                    {availableModels.filter(m => !m.isCustom).map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => {
+                          setSelectedModel({ modelId: m.modelId, providerName: m.providerName, label: m.label })
+                          setShowModelMenu(false)
+                        }}
+                        className={`w-full text-left px-3 py-1.5 rounded text-xs transition-colors ${
+                          selectedModel?.modelId === m.modelId && selectedModel?.providerName === m.providerName
+                            ? 'bg-brand/10 text-brand'
+                            : 'text-neutral-300 hover:bg-neutral-800'
+                        }`}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                    {availableModels.filter(m => m.isCustom).length > 0 && (
+                      <>
+                        <div className="px-2 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider mt-1">自定义模型</div>
+                        {availableModels.filter(m => m.isCustom).map(m => (
+                          <button
+                            key={m.id}
+                            onClick={() => {
+                              setSelectedModel({ modelId: m.modelId, providerName: m.providerName, label: m.label })
+                              setShowModelMenu(false)
+                            }}
+                            className={`w-full text-left px-3 py-1.5 rounded text-xs transition-colors ${
+                              selectedModel?.modelId === m.modelId && selectedModel?.providerName === m.providerName
+                                ? 'bg-brand/10 text-brand'
+                                : 'text-neutral-300 hover:bg-neutral-800'
+                            }`}
+                          >
+                            ✦ {m.label}
+                          </button>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          <span className="text-[10px] text-neutral-600">
+            设置中可添加自定义模型
+          </span>
+        </div>
 
         <div className="relative flex items-center">
           <input

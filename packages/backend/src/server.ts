@@ -41,8 +41,13 @@ import { doctorRoutes } from './api/doctor.js'  // D2 · 仿 Hermes doctor (2026
 import { providersRoutes } from './api/providers.js'  // D3 · 仿 Hermes providers 插件化 (2026-06-17)
 import { oauthRoutes } from './api/oauth.js'  // D4 · 4 平台 OAuth (微信公众号/飞书/视频号/Shopify, 2026-06-18)
 import { selfHealRoutes } from './api/self-heal.js'  // P3 · 自我诊断/修复 (2026-06-18)
+import { previewRoutes } from './api/preview.js'
+import { daemonRoutes } from './api/daemon.js'
 import { socialWorker } from './agents/social/worker-client.js'  // Track B.1 · Cookie 解析器
 import { initSchema, sqlite } from './storage/db.js'
+import { seedBrandSettings } from './core/harness/memory.js'
+import { seedStatusMessages } from './providers/streaming.js'
+import { initEvolutionDB, getEvolutionMetrics, triggerEvolution } from './core/self-evolve.js'
 import { sessionWSS } from './ws/session-ws.js'
 import { metrics } from './core/metrics.js'
 import { disconnect as redisDisconnect } from './cache/redis.js'
@@ -73,6 +78,9 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   // 启动时建表 (Phase 2 简化为内联, Phase 3 用 migration)
   initSchema()
+  initEvolutionDB() // v5.2: 自主学习进化引擎
+  seedBrandSettings() // 首次启动时将品牌知识写入数据库
+  seedStatusMessages() // 首次启动时将流式状态文案写入数据库
   // 让 routes 能直接用 app.sqlite
   app.decorate('sqlite', sqlite)
 
@@ -368,6 +376,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   // P3 (2026-06-18): 自我诊断/修复 API
   await app.register(selfHealRoutes, { prefix: '/api/v1' })
+  await app.register(previewRoutes, { prefix: '/api/v1' })  // 2026-06-20: 预览面板代理
   // 初始化确认门
   const { initConfirmationGate } = await import('./core/self-heal/gate.js')
   initConfirmationGate({ elevatedMode: false })
@@ -378,6 +387,19 @@ export async function buildServer(): Promise<FastifyInstance> {
   // 注: dashboard 走自己的 preHandler [app.authenticate], 不依赖全局 hook
   const { webRoutes } = await import('./web/index.js')
   await app.register(webRoutes)
+  await app.register(daemonRoutes, { prefix: '/api/v1' })
+
+  // v5.2: 自主学习进化 API
+  app.get('/api/v1/evolve/metrics', { preHandler: [app.authenticate] }, async (_req, reply) => {
+    const metrics = getEvolutionMetrics()
+    return reply.send(metrics)
+  })
+
+  app.post('/api/v1/evolve/trigger', { preHandler: [app.authenticate] }, async (req, reply) => {
+    if (req.user?.role !== 'ADMIN') return reply.code(403).send({ code: 'ADMIN_REQUIRED' })
+    const result = triggerEvolution()
+    return reply.send(result)
+  })
 
   return app
 }
@@ -466,9 +488,13 @@ async function main() {
     )
     app.log.info(`OpenAPI: http://${config.BACKEND_HOST}:${config.BACKEND_PORT}/docs`)
 
-    // Track C.1: 加载定时任务
+    // Track C.1: 加载定时任务 + MCP 服务器
     const { loadAutomations } = await import('./core/scheduler.js')
     loadAutomations()
+
+    // Track C.4: 加载已注册的 MCP 服务器
+    const { loadMCPServersOnStartup } = await import('./core/mcp-client.js')
+    loadMCPServersOnStartup().catch((e: any) => app.log.warn(e, 'MCP 启动加载失败'))
   } catch (err) {
     app.log.error(err, 'failed to start')
     process.exit(1)

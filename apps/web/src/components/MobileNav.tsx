@@ -2,13 +2,12 @@
 // 移动端底部 3-tab nav (Workspace / Agents / Settings)
 // 用 useIsMobile 判断显示
 import { Link, useLocation } from '@tanstack/react-router'
-import { Home, Store, Settings as SettingsIcon } from 'lucide-react'
+import { Home, Store } from 'lucide-react'
 import { useIsMobile } from '../hooks/useIsMobile'
 
 const TABS = [
   { to: '/', icon: Home, label: '工作台' },
   { to: '/agents', icon: Store, label: '市场' },
-  { to: '/settings', icon: SettingsIcon, label: '设置' },
 ] as const
 
 export function MobileNav() {

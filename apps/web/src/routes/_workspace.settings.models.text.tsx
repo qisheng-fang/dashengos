@@ -43,7 +43,7 @@ export const Route = createFileRoute('/_workspace/settings/models/text')({
   component: TextModelsPage,
 })
 
-function TextModelsPage() {
+export function TextModelsPage() {
   const [models, setModels] = useState<TextModel[]>([])
   const [chain, setChain] = useState<string[]>([])
   const [loading, setLoading] = useState(true)

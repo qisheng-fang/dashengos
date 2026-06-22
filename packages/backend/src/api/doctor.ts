@@ -17,12 +17,27 @@ const warn = (text: string, detail?: string, fix?: string): Check => ({ status: 
 const fail = (text: string, detail?: string, fix?: string): Check => ({ status: 'fail', text, detail, fix })
 const info = (text: string, detail?: string): Check => ({ status: 'info', text, detail })
 
+const PY_ENV = {
+  ...process.env,
+  DYLD_FALLBACK_LIBRARY_PATH: '/usr/local/Homebrew/lib',
+}
+
 function checkPythonDep(dep: string): Check {
   try {
-    const v = execFileSync(PYTHON, ['-c', `import ${dep}; print(getattr(${dep}, '__version__', '?'))`], { stdio: 'pipe', timeout: 5000 }).toString().trim()
+    const v = execFileSync(PYTHON, ['-c', `import ${dep}; print(getattr(${dep}, '__version__', '?'))`], { stdio: 'pipe', timeout: 5000, env: PY_ENV }).toString().trim()
     return ok(`${dep}`, v)
   } catch {
-    return fail(`${dep} 未安装`, undefined, `${PYTHON} -m pip install ${dep}`)
+    // import 失败时，检查 pip 是否已安装（可能缺少系统库，如 weasyprint 需要 GTK+）
+    try {
+      execFileSync(PYTHON, ['-m', 'pip', 'show', dep], { stdio: 'pipe', timeout: 5000, env: PY_ENV })
+      return warn(
+        `${dep} pip 已安装`,
+        'import 失败: 可能缺少系统库 (macOS 需 brew install pango gdk-pixbuf)',
+        'brew install pango gdk-pixbuf libffi (macOS) 或 apt install libpango-1.0-0 (Linux)',
+      )
+    } catch {
+      return fail(`${dep} 未安装`, undefined, `${PYTHON} -m pip install ${dep}`)
+    }
   }
 }
 
@@ -125,7 +140,7 @@ export async function doctorRoutes(app: FastifyInstance) {
           checkPythonDep('playwright'),
           (() => {
             try {
-              const out = execFileSync(PYTHON, ['-c', "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print('chromium:', p.chromium.executable_path or 'missing'); p.stop()"], { stdio: 'pipe', timeout: 10000 }).toString().trim()
+              const out = execFileSync(PYTHON, ['-c', "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print('chromium:', p.chromium.executable_path or 'missing'); p.stop()"], { stdio: 'pipe', timeout: 10000, env: PY_ENV }).toString().trim()
               return ok('Playwright Chromium', out)
             } catch { return warn('Playwright Chromium', '未安装', `${PYTHON} -m playwright install chromium`) }
           })(),
@@ -186,12 +201,12 @@ export async function doctorRoutes(app: FastifyInstance) {
     // 2. 装缺失的 Python 依赖
     const missingDeps: string[] = []
     for (const dep of ['docx', 'pptx', 'openpyxl', 'weasyprint', 'playwright']) {
-      try { execFileSync(PYTHON, ['-c', `import ${dep}`], { stdio: 'pipe', timeout: 5000 }) }
+      try { execFileSync(PYTHON, ['-c', `import ${dep}`], { stdio: 'pipe', timeout: 5000, env: PY_ENV }) }
       catch { missingDeps.push(dep) }
     }
     if (missingDeps.length > 0) {
       try {
-        const out = execFileSync(PYTHON, ['-m', 'pip', 'install', ...missingDeps], { stdio: 'pipe', timeout: 180_000 }).toString()
+        const out = execFileSync(PYTHON, ['-m', 'pip', 'install', ...missingDeps], { stdio: 'pipe', timeout: 180_000, env: PY_ENV }).toString()
         fixes.push({ name: `pip install ${missingDeps.join(', ')}`, ok: true, output: out.slice(-200) })
       } catch (e: any) {
         fixes.push({ name: `pip install ${missingDeps.join(', ')}`, ok: false, output: (e.message || String(e)).slice(0, 200) })
@@ -201,7 +216,7 @@ export async function doctorRoutes(app: FastifyInstance) {
     // 3. 装 Playwright Chromium
     if (missingDeps.includes('playwright')) {
       try {
-        execFileSync(PYTHON, ['-m', 'playwright', 'install', 'chromium'], { stdio: 'pipe', timeout: 180_000 })
+        execFileSync(PYTHON, ['-m', 'playwright', 'install', 'chromium'], { stdio: 'pipe', timeout: 180_000, env: PY_ENV })
         fixes.push({ name: 'playwright install chromium', ok: true, output: '' })
       } catch (e: any) {
         fixes.push({ name: 'playwright install chromium', ok: false, output: e.message.slice(0, 200) })

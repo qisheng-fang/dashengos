@@ -83,7 +83,7 @@ async function runPython(input: Record<string, unknown>): Promise<GenerateResult
   return new Promise((resolve, reject) => {
     const child = spawn(PYTHON, [DOCGEN_SCRIPT], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', DYLD_FALLBACK_LIBRARY_PATH: '/usr/local/Homebrew/lib' },
     })
 
     let stdout = ''

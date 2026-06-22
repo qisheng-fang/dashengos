@@ -15,13 +15,11 @@ const BACKEND_BASE =
   (import.meta.env?.VITE_BACKEND_URL as string) ||
   ''  // 空串 = 走 Vite proxy, 避免浏览器走系统 http_proxy
 
-const AGENT_BASE =
-  (typeof window !== 'undefined' && (window as any).__DASHE_AGENT_URL__) ||
-  (import.meta.env?.VITE_AGENT_URL as string) ||
-  'http://127.0.0.1:8001'
+// 走 Vite 代理统一入口 :3000/agent → :8001
+const _AGENT_BASE = ''
 
 const CHAT_URL = `${BACKEND_BASE}/api/v1/chat`
-const GRAPHQL_URL = `${AGENT_BASE}/api/agent`
+const GRAPHQL_URL = `/agent/api/agent`
 
 const GENERATE_RESPONSE_QUERY = `
   mutation generateCopilotResponse($data: GenerateCopilotResponseInput!) {
@@ -32,12 +30,13 @@ const GENERATE_RESPONSE_QUERY = `
       messages {
         __typename
         ... on TextMessageOutput {
-          id
-          createdAt
-          status { __typename code }
-          content
-          role
-          parentMessageId
+          id createdAt status { __typename code } content role parentMessageId
+        }
+        ... on ActionExecutionMessageOutput {
+          id createdAt status { __typename code } name arguments parentMessageId
+        }
+        ... on ResultMessageOutput {
+          id createdAt status { __typename code } result actionExecutionId actionName
         }
       }
       metaEvents { __typename }
@@ -52,7 +51,17 @@ export interface AgentMessage {
   parentMessageId?: string | null
 }
 
+/** 单次工具调用记录（前端展示用） */
+export interface ToolCallRecord {
+  id: string
+  name: string
+  arguments: string
+  result?: string
+  actionExecutionId?: string
+}
+
 export interface AgentChatResponse {
+  toolCalls: ToolCallRecord[]
   threadId: string
   runId: string
   status: { code: 'success' | 'failed' | 'pending'; reason?: string }
@@ -121,8 +130,13 @@ export async function agentChat(opts: {
         messages: Array<{
           __typename: string
           id: string
-          content: string[] | string
-          role: string
+          content?: string[] | string
+          role?: string
+          name?: string
+          arguments?: string
+          result?: string
+          actionExecutionId?: string
+          actionName?: string
           status?: { __typename: string; code: string }
           parentMessageId?: string | null
         }>
@@ -141,6 +155,7 @@ export async function agentChat(opts: {
     throw new Error('agent bridge: empty response (no generateCopilotResponse in data)')
   }
 
+  // 提取 assistant 文本消息
   const assistantRaw = result.messages.find(
     (m) => m.__typename === 'TextMessageOutput' && (m.role === 'assistant' || !m.role),
   )
@@ -148,16 +163,38 @@ export async function agentChat(opts: {
     ? {
         id: assistantRaw.id,
         role: 'assistant',
-        content: Array.isArray(assistantRaw.content) ? assistantRaw.content.join('') : assistantRaw.content,
+        content: Array.isArray(assistantRaw.content) ? assistantRaw.content.join('') : (assistantRaw.content || ''),
         parentMessageId: assistantRaw.parentMessageId ?? null,
       }
     : null
+
+  // 提取工具调用记录（ActionExecutionMessageOutput + ResultMessageOutput 配对）
+  const actionMsgs = result.messages.filter(
+    (m) => m.__typename === 'ActionExecutionMessageOutput',
+  )
+  const resultMsgs = result.messages.filter(
+    (m) => m.__typename === 'ResultMessageOutput',
+  )
+  const resultMap = new Map<string, string>()
+  for (const rm of resultMsgs) {
+    if (rm.actionExecutionId) {
+      resultMap.set(rm.actionExecutionId, typeof rm.result === 'string' ? rm.result : JSON.stringify(rm.result))
+    }
+  }
+  const toolCalls: ToolCallRecord[] = actionMsgs.map((am) => ({
+    id: am.id,
+    name: am.name || 'unknown',
+    arguments: am.arguments || '{}',
+    result: resultMap.get(am.id) || undefined,
+    actionExecutionId: am.id,
+  }))
 
   return {
     threadId: result.threadId,
     runId: result.runId,
     status: result.status,
     assistantMessage,
+    toolCalls,
     rawMessages: result.messages,
     latencyMs: Math.round(performance.now() - t0),
   }
@@ -169,7 +206,7 @@ export async function agentHealth(): Promise<{
   error?: string
 }> {
   try {
-    const res = await fetch(`${AGENT_BASE}/health`)
+    const res = await fetch(`/agent/health`)
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
     const data = (await res.json()) as {
       status: string

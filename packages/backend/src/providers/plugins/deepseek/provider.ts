@@ -36,7 +36,7 @@ async function chatImpl(req: ChatRequest, apiKey: string): Promise<ChatResponse>
   }
   const data = await resp.json() as {
     choices: Array<{
-      message: { content: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }
+      message: { content: string; reasoning_content?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }
       finish_reason: string
     }>
     model: string
@@ -74,7 +74,7 @@ async function* chatStreamImpl(req: ChatRequest, apiKey: string, signal?: AbortS
 
 async function listModelsImpl(_apiKey: string): Promise<string[]> {
   // DeepSeek 公开模型列表
-  return ['deepseek-chat', 'deepseek-reasoner']
+  return ['deepseek-v4-flash', 'deepseek-v4-pro']
 }
 
 async function testImpl(apiKey: string): Promise<{ ok: boolean; latency_ms: number; error?: string }> {
@@ -84,7 +84,7 @@ async function testImpl(apiKey: string): Promise<{ ok: boolean; latency_ms: numb
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: 'deepseek-chat',
+        model: 'deepseek-v4-flash',
         messages: [{ role: 'user', content: 'hi' }],
         max_tokens: 5,
       }),
@@ -108,7 +108,7 @@ const profile: ProviderProfile = {
   authType: 'api_key',
   envVars: ['DEEPSEEK_API_KEY'],
   baseUrl: 'https://api.deepseek.com/v1',
-  defaultModel: 'deepseek-chat',
+  defaultModel: 'deepseek-v4-pro',
   fallbackModels: ['deepseek-chat', 'deepseek-reasoner'],
   contextWindow: 64_000,
   supportsTools: true,

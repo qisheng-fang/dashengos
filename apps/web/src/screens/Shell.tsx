@@ -12,16 +12,19 @@ import { useUIStore } from '@/store/ui'
 import { useAuthStore } from '@/lib/auth-store'
 import { http, api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import { Menu, Settings, Sun, Moon, Search, LogOut, Loader2 } from 'lucide-react'
+import { Menu, Settings, Sun, Moon, Search, LogOut, Loader2, PanelRight } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useBreakpoint, type Breakpoint } from '@/hooks/useBreakpoint'
 import { Link, useLocation, useNavigate } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
-import { MessageSquare, Bot, Zap, FolderOpen, Wrench, Workflow, FileText, BarChart3, Puzzle, GitBranch } from 'lucide-react'
+import { MessageSquare, Bot, Zap, Puzzle, Workflow, FileText, BarChart3, Globe, Film, Palette } from 'lucide-react'
 import { MobileNav } from '@/components/MobileNav'
+import { usePreviewStore } from '@/store/preview'
 import { SidebarStatusStrip } from '@/components/SidebarStatusStrip'  // D1 · 仿 Hermes (2026-06-17)
+import { SidebarDashboard } from '@/components/SidebarDashboard'  // 2026-06-20: 侧栏仪表盘
+import PreviewTab from '@/components/panels/PreviewTab'  // 2026-06-20: 预览面板
 
 interface ShellProps {
   children: ReactNode
@@ -31,22 +34,25 @@ const NAV_ITEMS = [
   { to: '/', label: '工作台', icon: MessageSquare },
   { to: '/agents', label: 'Agent', icon: Bot },
   { to: '/mcp', label: 'MCP', icon: Zap },
-  { to: '/files', label: '文件', icon: FolderOpen },
+  // P1-fix (2026-06-18): 文件入口由 RightPanel FilesTab 统一提供，移除侧边栏独立入口
+  // { to: '/files', label: '文件', icon: FolderOpen },
   { to: '/skills', label: 'Skills', icon: Puzzle },
-  { to: '/studio', label: 'Studio', icon: Workflow },
+  // P0-fix (2026-06-18): Studio + 工作流 合并为统一"工作流编排"入口
+  { to: '/studio', label: '工作流编排', icon: Workflow },
   // Phase A.4 (2026-06-17) 加文档生成入口
   { to: '/documents', label: '文档', icon: FileText },
   // Phase A.5 (2026-06-17) 加可视化入口
   { to: '/visualizations', label: '可视化', icon: BarChart3 },
-  // Phase B.2 (2026-06-17) 加工作流编排入口
-  { to: '/workflows', label: '工作流', icon: GitBranch },
-  { to: '/settings', label: '设置', icon: Wrench },
+  // 浏览器自动化 (Playwright)
+  { to: "/open-design", label: "Open Design", icon: Palette },
+  { to: "/openmontage", label: "OpenMontage", icon: Film },
+  { to: '/browser', label: '浏览器', icon: Globe },
 ]
 
 export function Shell({ children }: ShellProps) {
   const { theme, setTheme } = useTheme()
   const navigate = useNavigate()
-  const { sidebarOpen, rightPanelOpen, toggleSidebar, setSidebarOpen, setRightPanelOpen } =
+  const { sidebarOpen, rightPanelOpen, toggleSidebar, setSidebarOpen, setRightPanelOpen, toggleRightPanel } =
     useUIStore()
   const user = useAuthStore((s) => s.user)
   const clearAuth = useAuthStore((s) => s.clear)
@@ -107,6 +113,9 @@ export function Shell({ children }: ShellProps) {
             aria-label="切换主题"
           >
             {theme === 'dark' ? <Sun /> : <Moon />}
+          </Button>
+          <Button variant="ghost" size="icon" onClick={toggleRightPanel} aria-label="切换预览面板" title="预览面板">
+            <PanelRight size={18} className={rightPanelOpen ? 'text-brand' : ''} />
           </Button>
           <Button variant="ghost" size="icon" asChild aria-label="设置">
             <Link to="/settings">
@@ -213,7 +222,11 @@ function Sidebar({ bp, currentPath }: { bp: Breakpoint; currentPath: string }) {
       {/* 最近会话 & 新会话按钮已隐藏 — 老板确认只需主工作台一个对话入口 (2026-06-18) */}
 
       {/* D1 · 仿 Hermes SidebarStatusStrip (2026-06-17) */}
-      {!isCollapsed && <SidebarStatusStrip />}
+      {!isCollapsed && <>
+        <SidebarDashboard />
+        <div className="mt-2" />
+        <SidebarStatusStrip />
+      </>}
     </nav>
   )
 }
@@ -221,25 +234,15 @@ function Sidebar({ bp, currentPath }: { bp: Breakpoint; currentPath: string }) {
 // RightPanel — 3 tab (工具/文件/Trace), 工具 tab 从 /api/v1/tools 拉真列表
 //   之前: 写死 3 个 tool calls (read_file/search_code/list_dir), search_code 401 是 hardcoded
 //   Phase 10: 真接 backend, 顶部 tab 切活动面板, 文件 tab 显示最近文件, Trace tab 显示 session 日志
-type Tab = 'tools' | 'files' | 'trace'
 
-interface Tool {
-  id: string
-  category: string
-  description: string
-}
-
-interface ActiveCall {
-  id: string
-  tool: string
-  status: 'success' | 'running' | 'queued' | 'error'
-  duration?: string
-  started_at: number
-}
+// ─── RightPanel types ──────────────────────────────────
+type Tab = 'preview' | 'tools' | 'files' | 'trace'
+interface Tool { id: string; name: string; description?: string; category?: string; riskLevel?: string }
+interface ActiveCall { id: string; tool: string; status: 'running' | 'success' | 'error' | 'queued'; started_at: number; duration?: string }
 
 function RightPanel() {
   const location = useLocation()
-  const [activeTab, setActiveTab] = useState<Tab>('tools')
+  const [activeTab, setActiveTab] = useState<Tab>('preview')
   const [tools, setTools] = useState<Tool[]>([])
   const [activeCalls, setActiveCalls] = useState<ActiveCall[]>([])
   const [loadingTools, setLoadingTools] = useState(true)
@@ -287,6 +290,15 @@ function RightPanel() {
         c.map((x) => (x.id === callId ? { ...x, status: 'success', duration: `${res.duration_ms}ms` } : x)),
       )
       setLastResult({ tool: toolId, result: res.result, ts: Date.now() })
+      // 2026-06-20: 推送到预览面板
+      const previewPush = usePreviewStore.getState().push
+      const contentStr = typeof res.result === 'string' ? res.result : JSON.stringify(res.result, null, 2)
+      previewPush({
+        type: typeof res.result === 'object' ? 'json' : 'text',
+        title: `${toolId} 执行结果`,
+        content: contentStr,
+        source: '工具调用',
+      })
     } catch (e) {
       setActiveCalls((c) =>
         c.map((x) => (x.id === callId ? { ...x, status: 'error' as const } : x)),
@@ -312,7 +324,7 @@ function RightPanel() {
                 : 'text-neutral-400 hover:text-neutral-100',
             )}
           >
-            {tab === 'tools' ? '工具' : tab === 'files' ? '文件' : 'Trace'}
+            {tab === 'tools' ? '工具' : tab === 'files' ? '文件' : tab === 'trace' ? 'Trace' : '预览'}
           </button>
         ))}
       </div>
@@ -400,6 +412,10 @@ function RightPanel() {
       {activeTab === 'trace' && (
         <TraceTab sessionId={sessionId} />
       )}
+
+      {activeTab === 'preview' && (
+        <PreviewTab />
+      )}
     </div>
   )
 }
@@ -466,7 +482,15 @@ function FilesTab({ sessionId }: { sessionId: string | undefined }) {
         文件 ({files.length})
       </div>
       {files.map((f) => (
-        <div key={f.id} className="flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-neutral-800 transition-colors">
+        <div key={f.id} onClick={() => {
+          const push = usePreviewStore.getState().push
+          push({
+            type: f.mime_type?.startsWith('image/') ? 'image' : f.mime_type?.includes('json') ? 'json' : 'text',
+            title: f.filename,
+            content: `文件: ${f.filename}\n类型: ${f.mime_type || '未知'}\n大小: ${f.size_bytes || '未知'} bytes\n\n点击预览——文件内容需通过后端 API 获取`,
+            source: '文件列表',
+          })
+        }} className="flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-neutral-800 transition-colors cursor-pointer">
           <span className="text-neutral-500">📄</span>
           <span className="font-mono text-neutral-200 truncate flex-1">{f.filename}</span>
           {f.size_bytes != null && (

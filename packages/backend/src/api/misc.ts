@@ -485,7 +485,7 @@ export async function modelRoutes(app: FastifyInstance) {
 }
 
 // ====================================================================
-// files.ts (4 端点)
+// files.ts (4 端点) — P1: 当前全部 stub，待实现真实文件存储
 // ====================================================================
 export async function fileRoutes(app: FastifyInstance) {
   app.post('/upload', { preHandler: [app.authenticate] }, async (_req, reply) => {
@@ -769,7 +769,7 @@ export async function systemRoutes(app: FastifyInstance) {
 }
 
 // ====================================================================
-// workspace.ts (2 端点)
+// workspace.ts (2 端点) — P1: 当前全部 stub，待实现真实工作区文件浏览
 // ====================================================================
 export async function workspaceRoutes(app: FastifyInstance) {
   app.get('/', { preHandler: [app.authenticate] }, async (_req, reply) => {

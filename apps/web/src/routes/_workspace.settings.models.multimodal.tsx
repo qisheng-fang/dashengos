@@ -67,7 +67,7 @@ export const Route = createFileRoute('/_workspace/settings/models/multimodal')({
   component: MultimodalModelsPage,
 })
 
-function MultimodalModelsPage() {
+export function MultimodalModelsPage() {
   const [models, setModels] = useState<MultimodalModel[]>([])
   const [testing, setTesting] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)

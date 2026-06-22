@@ -409,6 +409,97 @@ export function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_learnings_user ON agent_learnings(user_id);
     CREATE INDEX IF NOT EXISTS idx_learnings_type ON agent_learnings(user_id, task_type);
+
+    -- ==================== Harness 持久化表 (启动时即时创建) ====================
+
+    -- 上下文管理: 会话内关键决策/结论/待办
+    CREATE TABLE IF NOT EXISTS context (
+      user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      topic TEXT DEFAULT '',
+      key_decisions TEXT DEFAULT '[]',
+      pending_items TEXT DEFAULT '[]',
+      timestamp INTEGER DEFAULT 0,
+      PRIMARY KEY (user_id, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_context_user ON context(user_id);
+
+    -- 跨对话记忆: 从历史对话中提取的持久化关键信息
+    CREATE TABLE IF NOT EXISTS cross_session_memory (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'fact',
+      summary TEXT NOT NULL,
+      keywords TEXT DEFAULT '[]',
+      tool_sequence TEXT,
+      created_at INTEGER NOT NULL,
+      access_count INTEGER DEFAULT 0,
+      last_accessed_at INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_csm_user ON cross_session_memory(user_id);
+    CREATE INDEX IF NOT EXISTS idx_csm_category ON cross_session_memory(user_id, category);
+
+    -- 技能模式: 检测到的重复工具调用序列
+    CREATE TABLE IF NOT EXISTS skill_patterns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      signature TEXT NOT NULL,
+      tool_sequence TEXT NOT NULL,
+      frequency INTEGER DEFAULT 1,
+      recent_intents TEXT DEFAULT '[]',
+      first_seen INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL,
+      is_workflow INTEGER DEFAULT 0,
+      UNIQUE(user_id, signature)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sp_user ON skill_patterns(user_id);
+
+    -- Harness: 品牌知识配置 (支持后台修改，启动时回退硬编码)
+    CREATE TABLE IF NOT EXISTS brand_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      updated_at INTEGER NOT NULL
+    );
+
+    -- 对话欢迎语配置 (支持后台修改)
+    CREATE TABLE IF NOT EXISTS welcome_messages (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL DEFAULT 'global',  -- 'global' | 'user:{userId}'
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    -- 流式状态文案配置 (STATUS_MAP 动态化)
+    CREATE TABLE IF NOT EXISTS status_messages (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      emoji TEXT DEFAULT '',
+      description TEXT DEFAULT '',
+      updated_at INTEGER NOT NULL
+    );
+
+    -- 自定义模型配置 (WorkBuddy 风格，用户可自由添加)
+    CREATE TABLE IF NOT EXISTS custom_models (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      label TEXT NOT NULL,           -- 显示名 (如 "我的 Qwen 2.5")
+      provider_name TEXT NOT NULL,   -- 所属 provider ('siliconflow' | 'deepseek' | 'ollama' | 'custom')
+      model_id TEXT NOT NULL,        -- 实际模型名 (如 "Qwen/Qwen2.5-72B-Instruct")
+      base_url TEXT DEFAULT '',      -- 自定义 API 端点
+      api_key TEXT DEFAULT '',       -- 加密存储的 API Key
+      is_active INTEGER DEFAULT 0,   -- 是否为当前选中模型
+      sort_order INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cm_user ON custom_models(user_id);
+    CREATE INDEX IF NOT EXISTS idx_cm_active ON custom_models(user_id, is_active);
   `)
 
   // Phase 7: 增量迁移 (旧 DB 加列, 新 DB 上面的 CREATE TABLE 已含)

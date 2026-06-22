@@ -9,6 +9,7 @@ import { connect as netConnect } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import { searchAndFormat } from '../core/web-search.js'
+import { extractAndSaveCrossSessionMemory } from '../core/harness/index.js'
 // import { getStatusText } from '../providers/streaming.js' // unused
 
 const SOCKET_PATH = '/tmp/dasheng/deerflow.sock'
@@ -358,22 +359,20 @@ export async function chatRoutes(app: FastifyInstance) {
     }
   })
 
-  // ── ★ SSE 流式端点 — token 级实时响应 ──
+  // ── ★ SSE 流式端点 — Agent Loop 驱动 ──
   //  POST /api/v1/chat/stream
-  //  返回 text/event-stream: status/token/usage/tool_call/done/error 事件
+  //  返回 text/event-stream: status/token/tool_start/tool_end/thinking/searching/done/error
   app.post('/stream', { preHandler: [app.authenticate] }, async (req, reply) => {
     const parsed = ChatSchema.safeParse(req.body)
     if (!parsed.success) return reply.code(400).send({ code: 'VALIDATION_FAILED', details: parsed.error.issues })
 
-    const { message, threadId: clientThreadId, history } = parsed.data
-    void clientThreadId // SSE 端点不依赖 threadId 做持久化
+    const { message, history } = parsed.data
 
-    // 设置 SSE 响应头
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',          // 禁止 Nginx 缓冲
+      'X-Accel-Buffering': 'no',
       'Access-Control-Allow-Origin': '*',
     })
 
@@ -392,55 +391,72 @@ export async function chatRoutes(app: FastifyInstance) {
         return
       }
 
-      const model = process.env[provider.name.toUpperCase() + '_DEFAULT_MODEL'] || provider.defaultModel
+      const user = req.user as { sub?: string; id?: string; role?: string; username?: string } | undefined
+      const userId = user?.sub || user?.id || 'anonymous'
+      const sessionId = crypto.randomUUID?.() || 'sess_' + Date.now()
 
-      // 构建消息（复用 directLLM 的逻辑）
-      const systemPrompt = buildSystemPrompt(message)
-      const messages = [
-        { role: 'system' as const, content: systemPrompt },
-        ...history.slice(-20),
-        { role: 'user' as const, content: message },
-      ]
+      const harnessPrompt = buildSystemPrompt(message)
 
-      // 检查 provider 是否支持流式
-      if (!provider.chatStream) {
-        // 不支持流式 → 回退到非流式 + 分块发送
-        reply.raw.write(`event: status\ndata: ${JSON.stringify({ t: '等待模型响应...' })}\n\n`)
+      // 发送初始状态
+      reply.raw.write(`event: status\ndata: ${JSON.stringify({ t: 'DaShengOS Agent 引擎启动...' })}\n\n`)
 
-        const response = await provider.chat(
-          { model, messages, max_tokens: 4096, temperature: 0.7 },
-          apiKey,
-        )
+      const { runAgentLoop } = await import('../core/agent/loop.js')
+      const rawHistory = history.slice(-50).map(h => ({ role: h.role, content: h.content }))
 
-        // 分块发送内容（模拟流式效果）
-        const text = response.content || ''
-        const chunkSize = 4
-        for (let i = 0; i < text.length; i += chunkSize) {
-          const chunk = text.slice(i, i + chunkSize)
-          reply.raw.write(`event: token\ndata: ${JSON.stringify({ c: chunk, m: { model: response.model } })}\n\n`)
-        }
+      const result = await runAgentLoop(message, rawHistory, {
+        userId,
+        sessionId,
+        workspaceDir: '/Users/apple/Desktop/ai-workbench-v2',
+        elevatedMode: true,
+        maxIterations: 25,
+        systemPrompt: harnessPrompt,
+        onToken: (token) => {
+          if (!controller.signal.aborted && !reply.raw.writableEnded) {
+            reply.raw.write(`event: token\ndata: ${JSON.stringify({ c: token })}\n\n`)
+          }
+        },
+        onEvent: (event) => {
+          if (controller.signal.aborted || reply.raw.writableEnded) return
+          switch (event.type) {
+            case 'status':
+              reply.raw.write(`event: status\ndata: ${JSON.stringify({ t: event.text })}\n\n`); break
+            case 'tool_start':
+              reply.raw.write(`event: tool_start\ndata: ${JSON.stringify({ n: event.name, a: event.args })}\n\n`); break
+            case 'tool_end':
+              reply.raw.write(`event: tool_end\ndata: ${JSON.stringify({ n: event.name, ok: event.success, s: event.summary })}\n\n`); break
+            case 'error':
+              reply.raw.write(`event: error\ndata: ${JSON.stringify({ e: event.message })}\n\n`); break
+            case 'thinking':
+              reply.raw.write(`event: thinking\ndata: ${JSON.stringify({ t: event.text })}\n\n`); break
+            case 'searching':
+              reply.raw.write(`event: searching\ndata: ${JSON.stringify({ q: event.query })}\n\n`); break
+          }
+        },
+      })
 
-        reply.raw.write(`event: usage\ndata: ${JSON.stringify(response.usage)}\n\n`)
-        reply.raw.write(`event: done\ndata: ${JSON.stringify({ finish_reason: response.finish_reason, model: response.model })}\n\n`)
-        reply.raw.end()
-        return
+      // 跨对话记忆持久化
+      if (result.success && result.response) {
+        const toolNames = result.steps
+          .filter(s => s.type === 'tool_call')
+          .flatMap(s => s.toolCalls?.map(tc => tc.name) || [])
+        try {
+          extractAndSaveCrossSessionMemory({
+            userId, sessionId,
+            userMessage: message,
+            assistantResponse: result.response,
+            toolCalls: toolNames.length > 0 ? toolNames : undefined,
+          })
+        } catch { /* non-fatal */ }
       }
 
-      // ★ 真正的 SSE 流式输出
-      for await (const chunk of provider.chatStream(
-        { model, messages, max_tokens: 8192, temperature: 0.7 },
-        apiKey,
-        controller.signal,
-      )) {
-        if (controller.signal.aborted) break
-        const sseLine = formatSSEChunk(chunk)
-        if (sseLine) reply.raw.write(sseLine)
-      }
-
-      reply.raw.end()
-    } catch (e: any) {
       if (!reply.raw.writableEnded) {
-        reply.raw.write(`event: error\ndata: ${JSON.stringify({ e: e.message?.slice(0, 300) || '未知错误' })}\n\n`)
+        reply.raw.write(`event: usage\ndata: ${JSON.stringify(result.totalTokens)}\n\n`)
+        reply.raw.write(`event: done\ndata: ${JSON.stringify({ finish_reason: 'stop' })}\n\n`)
+        reply.raw.end()
+      }
+    } catch (e) {
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(`event: error\ndata: ${JSON.stringify({ e: (e as Error).message?.slice(0, 300) || '未知错误' })}\n\n`)
         reply.raw.write('event: done\ndata: {}\n\n')
         reply.raw.end()
       }
@@ -508,35 +524,30 @@ async function needsWebSearch(message: string): Promise<boolean> {
 // ── 流式辅助函数 ──
 
 /** 将 StreamChunk 格式化为 SSE 文本行 */
-function formatSSEChunk(chunk: { type: string; content?: string; meta?: Record<string, unknown> }): string {
-  switch (chunk.type) {
-    case 'token': return `event: token\ndata: ${JSON.stringify({ c: chunk.content, m: chunk.meta })}\n\n`
-    case 'status': return `event: status\ndata: ${JSON.stringify({ t: chunk.content })}\n\n`
-    case 'usage': return `event: usage\ndata: ${JSON.stringify(chunk.meta || {})}\n\n`
-    case 'tool_call': return `event: tool_call\ndata: ${JSON.stringify(chunk.meta || {})}\n\n`
-    case 'error': return `event: error\ndata: ${JSON.stringify({ e: chunk.content })}\n\n`
-    case 'done': return `event: done\ndata: ${JSON.stringify(chunk.meta || {})}\n\n`
-    default: return ''
+
+/** 构建 system prompt — 使用 Harness 框架动态注入 */
+function buildSystemPrompt(message: string, userId?: string): string {
+  try {
+    const { buildSuperSystemPrompt } = require('../core/harness/system-prompt.js')
+    let memory = null
+    if (userId) {
+      try {
+        const { loadMemoryContext } = require('../core/harness/memory.js')
+        memory = loadMemoryContext(userId)
+      } catch { /* memory load non-critical */ }
+    }
+    return buildSuperSystemPrompt({
+      mode: 'agent',
+      taskType: /报告|report|分析|行业|市场|趋势|研究/.test(message) ? 'analysis' : 'chat',
+      query: message,
+      memory,
+      wikiPages: memory?.wikiPages?.length ? memory.wikiPages : undefined,
+    })
+  } catch {
+    return `[SYSTEM] DaShengOS v6. Tool-first. Brand: AIYOUQU (爱尤趣). 
+Use function calling for tools silently. Output final result directly.
+Never start with greetings. Never describe your process.`
   }
-}
-
-/** 构建 system prompt（从 directLLM 提取） */
-function buildSystemPrompt(message: string): string {
-  // 检测消息类型
-  const wantsHTML = /html|网页|web\s*页|html\s*格式/i.test(message)
-  const wantsReport = /报告|report|分析|行业|市场|趋势|研究/.test(message)
-  const isBusinessRequest = wantsReport || message.length > 50
-  const isGreetingOnly = /^(你好|hi|hello|嗨|hey|在吗|哈喽|哈啰|谢谢|再见|bye|早上好|中午好|晚上好|晚安)[\s！!。,，。]*$/i.test(message.trim())
-
-  if (isGreetingOnly) {
-    return '你是 DaShengOS 智能工作台助手，品牌「爱尤趣」(情趣娃娃)。回复简洁、友好、专业。支持中文。'
-  }
-
-  if (wantsReport || isBusinessRequest) {
-    return `你是 DaShengOS 智能工作台助手，专门为「爱尤趣」情趣娃娃品牌服务。\n用户提了一个业务级问题。请以**资深行业分析师 + 设计师**身份，给出专业、客观的回复。\n${wantsHTML ? '使用 HTML 格式输出' : '使用 Markdown'}\n包含：执行摘要 / 市场规模 / 趋势 / 竞品 / 机会 / 建议`
-  }
-
-  return '你是 DaShengOS 智能工作台助手，品牌「爱尤趣」(情趣娃娃)。回复简洁、友好、专业。支持中文。'
 }
 
 async function directLLM(message: string, history: Array<{role: string; content: string}> = []): Promise<string> {
@@ -562,7 +573,7 @@ async function directLLM(message: string, history: Array<{role: string; content:
           method: 'POST',
           headers: { Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model,
+            model: model === 'deepseek-reasoner' ? 'deepseek-chat' : model,
             messages: [
               { role: 'system', content: '你是 DaShengOS 智能工作台助手，品牌「爱尤趣」(情趣娃娃)。回复简洁、友好、专业。支持中文。' },
               ...history.slice(-10).map(h => ({ role: h.role, content: h.content })),
@@ -579,7 +590,7 @@ async function directLLM(message: string, history: Array<{role: string; content:
           continue
         }
         const data = await resp.json() as any
-        return data.choices[0]?.message?.content || ''
+        const choice = data.choices?.[0]; return choice?.message?.content || choice?.message?.reasoning_content || ''
       } catch (e: any) {
         markApiKeyFailed(provider, k)
         lastErr = e.message
@@ -656,7 +667,7 @@ async function directLLM(message: string, history: Array<{role: string; content:
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model,
+      model: model === 'deepseek-reasoner' ? 'deepseek-chat' : model,
       messages,
       max_tokens: wantsDetailed ? 8000 : (searchContext || isBusinessRequest) ? 6000 : 2048,
       temperature: 0.7,

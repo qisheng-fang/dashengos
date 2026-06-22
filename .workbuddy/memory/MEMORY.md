@@ -14,12 +14,38 @@
 
 - **后端**: Fastify 5 + TypeScript + SQLite (better-sqlite3) + Redis (可选)
 - **前端**: React 18 + Vite + TanStack Router + Zustand + shadcn/ui + framer-motion
-- **LLM**: SiliconFlow (默认) + DeepSeek + Ollama (本地)
+- **LLM**: SiliconFlow (默认, Qwen2.5-72B-Instruct) + DeepSeek + Ollama (本地)
+- **⚠️ 不要把 LLM_PROVIDER 改回 agnes_ai** — agnes-2.0-flash 是轻量模型，聊天降智
 - **Monorepo**: pnpm workspace (packages/backend + apps/web)
 
 ## 关键端口
 
 - 后端 8000 / 前端 3000 / 8 worker 9101-9112 + 9200-9201
+
+## Harness 框架 (2026-06-18)
+
+### 六模块架构 (`packages/backend/src/core/harness/`, ~2427行)
+- **system-prompt.ts** — 超级 System Prompt (品牌知识+角色+能力+规范+第一性原理+反思协议+跨对话记忆注入)
+- **memory.ts** — 记忆注入 (品牌知识+learnings+memory+上下文管理+Wiki+跨对话记忆) + CrossSessionEntry(with toolSequence[])
+- **planner.ts** — 规划分解 (复杂度评估+LLM辅助first-principles分解+降级回退)
+- **reflector.ts** — 反思验证 (幻觉检测+空结果+偏题+自动重试策略)
+- **skill-discovery.ts** — 技能发现引擎 (模式检测+SKILL.md自动生成+工作流编排+批量发现+对话结束检测)
+- **index.ts** — 编排器 (Stream轻量/Agent完整 + 工具序列推荐 + skill discovery re-export)
+
+### 接入
+- `/chat/stream` → enhanceStreamMode() (轻量 prompt+记忆注入)
+- `/chat/agent` → prepareAgentMode() (完整 Harness + systemPrompt) + analyzeConversationEnd() 技能发现
+- directLLM() → Harness 增强版 prompt
+- `/chat/skills/discovered` — 列出已发现 skill
+- `/chat/skills/discover` — 手动触发批量发现
+- `/chat/skills/generate` — 手动生成 skill
+
+### Skill Discovery 核心逻辑
+- detectPatterns(): tool_sequence 签名分组, 频率≥2 或 ≥3步工作流自动识别
+- matchExistingSkill(): 精确/前缀匹配已有 skill
+- generateSkillFromPattern/Context(): 自动生成 SKILL.md (不覆盖人工编写)
+- analyzeConversationEnd(): Agent 完成后自动保存+检测+生成
+- buildWorkflowFromPattern(): 工具序列→DAG工作流(含依赖/条件/失败处理)
 
 ## Agent Runtime (2026-06-18)
 
@@ -118,3 +144,19 @@
 
 - **auth-store**: Zustand persist, localStorage key = `dasheng-auth` (JSON)
 - **前端取 token**: `useAuthStore.getState().accessToken` (不是 `localStorage.getItem('access_token')`)
+
+## 持久化保障 (2026-06-18)
+
+- **initSchema()** 启动时即时建 30 张表 (含 context/cross_session_memory/skill_patterns)
+- 惰性 ensureXxxTable() 保留为双保险
+- 详细文档: `docs/DaShengOS-PERSISTENCE-AND-BACKUP-2026-06-18.md`
+- 配置红线: LLM_PROVIDER=siliconflow (不能改 agnes_ai), 前端 baseUrl='' (走 Vite proxy), confirmGate elevatedMode=false
+
+## 数据库表 (30 张)
+
+启动时自动创建 (initSchema in storage/db.ts):
+- 核心: users/sessions/messages/agents/skills/agents_skills/mcp_servers/mcp_tools/tool_permissions/file_objects
+- 安全: audit_logs/secrets/api_keys/login_attempts/sso_sessions/sso_links
+- 业务: marketplace_installs/skill_installs/billing_usage/billing_tier/refresh_tokens/user_settings/settings/social_cookies/automations
+- 记忆: memory_summaries/agent_learnings
+- **Harness**: context / cross_session_memory / skill_patterns
