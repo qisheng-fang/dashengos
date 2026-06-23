@@ -12,8 +12,8 @@ function sanitizeUpstreamError(): string {
 
 const CreateSessionSchema = z.object({
   title: z.string().min(1).max(255).optional(),
-  agent_id: z.string().min(1),
-  model: z.string().min(1),
+  agent_id: z.string().min(1).optional().default('default'),
+  model: z.string().min(1).optional().default('deepseek-v4-flash'),
   skills: z.array(z.string()).default([]),
 })
 
@@ -70,7 +70,26 @@ export async function sessionRoutes(app: FastifyInstance) {
     return reply.send(row)
   })
 
+  // GET /sessions/:id/messages — 拉取会话历史消息
+  app.get('/:id/messages', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const userId = req.user!.id
+    const query = req.query as { limit?: string }
+    const limit = Math.min(parseInt(query.limit || '50', 10), 200)
+
+    // 验证会话归属
+    const session = sqlite.prepare('SELECT id FROM sessions WHERE id = ? AND user_id = ?').get(id, userId)
+    if (!session) return reply.code(404).send({ code: 'SESSION_NOT_FOUND' })
+
+    const rows = sqlite
+      .prepare('SELECT id, role, content, model, created_at FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ?')
+      .all(id, limit)
+
+    return reply.send({ messages: rows })
+  })
+
   // POST /sessions/:id/messages
+    // POST /sessions/:id/messages
   //   Phase 9: 当 DEERFLOW_ENABLED=false, 直接调 Ollama (走 /api/chat)
   //           存 user + assistant 两条 messages 到 messages 表
   //           返 assistant message + session 信息
@@ -335,6 +354,36 @@ export async function sessionRoutes(app: FastifyInstance) {
     return reply.send({ id, status: 'ABORTED' })
   })
 
+  // PATCH /sessions/:id — 更新会话标题
+  app.patch('/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const userId = req.user!.id
+    const body = req.body as { title?: string }
+    if (!body.title) return reply.code(400).send({ code: 'TITLE_REQUIRED' })
+
+    const res = sqlite
+      .prepare('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+      .run(body.title, Date.now(), id, userId)
+    if (res.changes === 0) return reply.code(404).send({ code: 'SESSION_NOT_FOUND' })
+    return reply.send({ id, title: body.title })
+  })
+
+  // DELETE /sessions/:id — 删除会话
+  app.delete('/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const userId = req.user!.id
+
+    // 先删消息
+    sqlite.prepare('DELETE FROM messages WHERE session_id = ?').run(id)
+    // 再删会话
+    const res = sqlite
+      .prepare('DELETE FROM sessions WHERE id = ? AND user_id = ?')
+      .run(id, userId)
+    if (res.changes === 0) return reply.code(404).send({ code: 'SESSION_NOT_FOUND' })
+    return reply.send({ id, deleted: true })
+  })
+
+  // POST /sessions/:id/archive — 归档会话并自动生成记忆摘要
   // POST /sessions/:id/archive — 归档会话并自动生成记忆摘要
   // Phase A.2 (2026-06-17): 三层记忆系统 · 归档时自动调用 autoSummarize
   app.post('/:id/archive', { preHandler: [app.authenticate] }, async (req, reply) => {

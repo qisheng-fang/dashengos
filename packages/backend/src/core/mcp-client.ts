@@ -47,6 +47,13 @@ const activeServers = new Map<string, {
   client: MCPStdioClient | null  // reusable client for tool calls
 }>()
 
+// ─── Resilience state ─────────────────────────────────────
+
+const failureCount = new Map<string, { count: number; lastFailure: number }>()
+const circuitBreaker = new Map<string, { open: boolean; openedAt: number; cooldownMs: number }>()
+const restartCooldown = new Map<string, number>()  // serverId → last restart timestamp
+let heartbeatInterval: ReturnType<typeof setInterval> | null = null
+
 // ─── MCP Protocol Client ───────────────────────────────────
 
 class MCPStdioClient {
@@ -62,6 +69,10 @@ class MCPStdioClient {
     this.proc = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...env },
+    })
+
+    this.proc.on('error', (err: Error) => {
+      console.error(`[MCP:${command}] spawn error:`, err.message)
     })
 
     this.proc.stdout!.on('data', (chunk: Buffer) => {
@@ -305,25 +316,125 @@ export async function executeMCPTool(
   }
 
   const tool = mcpTools[0]
-  const active = activeServers.get(tool.server_id)
+  const serverId = tool.server_id
 
-  if (!active) {
-    return { success: false, error: `MCP server not running: ${tool.server_id}` }
+  // ── Circuit breaker check ──
+  const breaker = circuitBreaker.get(serverId)
+  if (breaker?.open) {
+    const elapsed = Date.now() - breaker.openedAt
+    if (elapsed < breaker.cooldownMs) {
+      return { success: false, error: `MCP server ${serverId} 已熔断 (${Math.ceil((breaker.cooldownMs - elapsed) / 1000)}s 后恢复)` }
+    }
+    // Cooldown expired → try recovery
+    circuitBreaker.delete(serverId)
+    failureCount.delete(serverId)
+    console.log(`[MCP] Circuit breaker cooldown expired for ${serverId}, attempting recovery`)
   }
 
+  const active = activeServers.get(serverId)
+  if (!active) {
+    // Try auto-restart
+    console.log(`[MCP] Server ${serverId} not running, attempting auto-restart...`)
+    const restored = await restoreMCPServer(serverId)
+    if (!restored) {
+      recordMCPFailure(serverId)
+      return { success: false, error: `MCP server not running: ${serverId}` }
+    }
+    // Retry with restored server
+    return executeMCPTool(toolName, args)
+  }
+
+  // ── Retry with exponential backoff ──
+  let lastError = ''
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const client = active.client
+      if (!client) {
+        return { success: false, error: `MCP client not initialized for: ${serverId}` }
+      }
+      const result = await client.callTool(dbName, args)
+      // Success → reset failure count
+      failureCount.delete(serverId)
+      return {
+        success: true,
+        data: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+      }
+    } catch (e: any) {
+      lastError = e.message
+      console.log(`[MCP] Tool call attempt ${attempt + 1}/3 failed for ${serverId}: ${lastError.slice(0, 100)}`)
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)))  // 500ms, 1s, 2s
+      }
+    }
+  }
+
+  // All 3 retries failed → aggressive restart
+  console.log(`[MCP] All retries failed for ${serverId}, triggering aggressive restart...`)
+  recordMCPFailure(serverId)
+  
+  const cooldown = restartCooldown.get(serverId) || 0
+  if (Date.now() - cooldown < 500) {
+    console.log(`[MCP] Restart cooldown active for ${serverId}, skipping`)
+    return { success: false, error: `MCP execution failed after 3 retries: ${lastError}` }
+  }
+  restartCooldown.set(serverId, Date.now())
+
+  // Kill + restart
+  await stopMCPServer(serverId)
+  const config = activeServers.get(serverId)?.config
+  if (config) {
+    const result = await startMCPServer(config)
+    if (result.success) {
+      console.log(`[MCP] Aggressive restart succeeded for ${serverId}`)
+      failureCount.delete(serverId)
+      // Retry once more with restarted server
+      try {
+        const restarted = activeServers.get(serverId)
+        if (restarted?.client) {
+          const retryResult = await restarted.client.callTool(dbName, args)
+          return {
+            success: true,
+            data: typeof retryResult === 'string' ? retryResult : JSON.stringify(retryResult, null, 2),
+          }
+        }
+      } catch (e: any) {
+        console.log(`[MCP] Post-restart retry also failed: ${e.message.slice(0, 100)}`)
+      }
+    }
+  }
+
+  return { success: false, error: `MCP execution failed after 3 retries + restart: ${lastError}` }
+}
+
+// ─── Failure tracking + circuit breaker ────────────────────
+
+function recordMCPFailure(serverId: string) {
+  const current = failureCount.get(serverId) || { count: 0, lastFailure: 0 }
+  current.count++
+  current.lastFailure = Date.now()
+  failureCount.set(serverId, current)
+
+  if (current.count >= 5) {
+    circuitBreaker.set(serverId, { open: true, openedAt: Date.now(), cooldownMs: 60000 })
+    console.log(`[MCP] CIRCUIT BREAKER OPEN for ${serverId} — 60s isolation`)
+  }
+}
+
+async function restoreMCPServer(serverId: string): Promise<boolean> {
   try {
-    // Reuse the existing client from the active server pool
-    const client = active.client
-    if (!client) {
-      return { success: false, error: `MCP client not initialized for: ${tool.server_id}` }
+    const srv = sqlite.prepare('SELECT * FROM mcp_servers WHERE id = ? AND enabled = 1').get(serverId) as any
+    if (!srv) return false
+    const config: MCPServerConfig = {
+      id: srv.id,
+      name: srv.name,
+      command: srv.command,
+      args: JSON.parse(srv.args_json),
+      env: srv.env_json ? JSON.parse(srv.env_json) : undefined,
     }
-    const result = await client.callTool(dbName, args)
-    return {
-      success: true,
-      data: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
-    }
-  } catch (e: any) {
-    return { success: false, error: `MCP execution failed: ${e.message}` }
+    const result = await startMCPServer(config)
+    return result.success
+  } catch {
+    return false
   }
 }
 
@@ -339,4 +450,92 @@ export function isMCPTool(toolName: string): boolean {
   } catch {
     return false
   }
+}
+
+// ─── Heartbeat — 30s interval, detects silent failures ──────────────
+
+export function startMCPHeartbeat(): void {
+  if (heartbeatInterval) return
+  heartbeatInterval = setInterval(async () => {
+    for (const [id, server] of activeServers) {
+      if (!server.client) continue
+      const online = server.process.exitCode === null && !server.process.killed
+      if (!online) {
+        console.log(`[MCP] Heartbeat detected dead server: ${id}, restarting...`)
+        recordMCPFailure(id)
+        const config = server.config
+        await stopMCPServer(id)
+        const result = await startMCPServer(config)
+        if (result.success) {
+          failureCount.delete(id)
+          console.log(`[MCP] Heartbeat restart succeeded: ${id}`)
+        }
+        continue
+      }
+      // Ping check
+      try {
+        await server.client.request('ping', {}, 5000)
+        failureCount.delete(id)  // reset on success
+      } catch {
+        console.log(`[MCP] Heartbeat ping failed: ${id}`)
+        recordMCPFailure(id)
+      }
+    }
+  }, 30000)
+  console.log('[MCP] Heartbeat started (30s interval)')
+}
+
+export function stopMCPHeartbeat(): void {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval)
+    heartbeatInterval = null
+    console.log('[MCP] Heartbeat stopped')
+  }
+}
+
+// ─── Health validation — called per-request to filter offline tools ──────
+
+export interface MCPHealthStatus {
+  serverId: string
+  name: string
+  online: boolean
+  toolCount: number
+  lastError?: string
+}
+
+export function getMCPHealthStatus(): MCPHealthStatus[] {
+  const status: MCPHealthStatus[] = []
+  for (const [id, server] of activeServers) {
+    const online = server.process.exitCode === null && server.process.killed === false
+    status.push({
+      serverId: id,
+      name: server.config.name,
+      online,
+      toolCount: server.tools.length,
+      lastError: online ? undefined : '进程已退出或未响应',
+    })
+  }
+  // Also check registered servers not yet started
+  try {
+    const rows = sqlite.prepare('SELECT id, name FROM mcp_servers WHERE enabled = 1').all() as Array<{ id: string; name: string }>
+    for (const row of rows) {
+      if (!activeServers.has(row.id)) {
+        status.push({ serverId: row.id, name: row.name, online: false, toolCount: 0, lastError: '未启动' })
+      }
+    }
+  } catch { /* db may not be ready */ }
+  return status
+}
+
+export function getOfflineMCPToolNames(): Set<string> {
+  const offline = new Set<string>()
+  for (const [id, server] of activeServers) {
+    const online = server.process.exitCode === null && server.process.killed === false
+    if (!online) {
+      for (const tool of server.tools) {
+        offline.add('mcp__' + id + '__' + tool.name)
+      }
+    }
+  }
+  return offline
 }

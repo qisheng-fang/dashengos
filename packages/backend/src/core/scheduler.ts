@@ -11,6 +11,7 @@
 import cron from 'node-cron'
 import type { ScheduledTask } from 'node-cron'
 import { sqlite } from '../storage/db.js'
+import { randomUUID } from 'node:crypto'
 
 export type TriggerType = 'cron' | 'once' | 'interval'
 export type AutomationAction = 'social_publish' | 'content_generate' | 'data_collect' | 'report_generate' | 'custom'
@@ -214,7 +215,6 @@ async function executeCustomAction(automation: AutomationDef) {
 
 /** 创建 automation (DB + 调度) */
 export function createAutomation(def: Omit<AutomationDef, 'id' | 'last_run_at' | 'next_run_at' | 'run_count' | 'created_at' | 'updated_at'>): AutomationDef {
-  const { randomUUID } = require('node:crypto')
   const now = Date.now()
   const id = randomUUID()
   const nextRun = nextRunMs(def.trigger_type, def.cron_expr)

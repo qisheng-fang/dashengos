@@ -16,9 +16,24 @@ function isDaemonRunning(): boolean {
   return daemonProcess !== null && daemonProcess.exitCode === null
 }
 
+async function checkPortInUse(port: number): Promise<boolean> {
+  const net = await import('node:net')
+  return new Promise((resolve) => {
+    const server = net.createServer()
+    server.once('error', () => resolve(true))
+    server.once('listening', () => { server.close(); resolve(false) })
+    server.listen(port)
+  })
+}
+
 async function startDaemon(): Promise<{ ok: boolean; message: string }> {
   if (isDaemonRunning()) {
     return { ok: true, message: 'daemon 已在运行 (pid ' + daemonProcess!.pid + ')' }
+  }
+  // 检查端口是否被外部进程占用
+  const portUsed = await checkPortInUse(DAEMON_PORT)
+  if (portUsed) {
+    return { ok: true, message: `daemon 端口 ${DAEMON_PORT} 已被占用（可能来自之前会话），直接复用` }
   }
 
   return new Promise((resolve) => {
@@ -61,6 +76,11 @@ async function startDaemon(): Promise<{ ok: boolean; message: string }> {
 }
 
 async function startWeb(): Promise<{ ok: boolean; message: string }> {
+  // 检查端口是否已被占用
+  const webPortUsed = await checkPortInUse(WEB_PORT)
+  if (webPortUsed) {
+    return { ok: true, message: `web 端口 ${WEB_PORT} 已被占用，直接复用` }
+  }
   return new Promise((resolve) => {
     try {
       webProcess = spawn('/usr/local/Homebrew/Cellar/node@24/24.17.0/bin/npx', ['next', 'dev', '--turbopack', '-p', String(WEB_PORT)], {
@@ -129,8 +149,8 @@ export async function daemonRoutes(app: FastifyInstance) {
   })
 
   app.get('/daemon/status', async (_req, reply) => {
-    const dRunning = isDaemonRunning()
-    const wRunning = webProcess !== null && webProcess.exitCode === null
+    const dRunning = isDaemonRunning() || await checkPortInUse(DAEMON_PORT)
+    const wRunning = (webProcess !== null && webProcess.exitCode === null) || await checkPortInUse(WEB_PORT)
     return reply.send({
       running: dRunning && wRunning,
       daemon: { running: dRunning, port: DAEMON_PORT },

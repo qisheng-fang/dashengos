@@ -137,7 +137,7 @@ export function recordEvolution(opts: {
   if (!opts.success && opts.errorMessage) {
     errorPattern = classifyError(opts.errorMessage)
     learnedInsight = generateInsight(opts.strategy, opts.toolSequence, errorPattern)
-    learnErrorPattern(errorPattern, opts.errorMessage)
+    learnErrorPattern(errorPattern)
   }
 
   // 计算 score_delta
@@ -265,12 +265,12 @@ export function getEvolutionMetrics(): EvolutionMetrics {
 /**
  * 触发进化 — 基于积累的经验优化策略
  */
-export async function triggerEvolution(): {
+export async function triggerEvolution(): Promise<{
   evolved: boolean
   new_patterns: number
   pruned_patterns: number
   generation: number
-} {
+}> {
   const metrics = getEvolutionMetrics()
   const newGeneration = metrics.generation + 1
 
@@ -326,7 +326,7 @@ export async function triggerEvolution(): {
   // 4. 自创技能 — 将高成功率策略转为 SKILL.md
   let skillsCreated = 0
   try {
-    const { generateSkillFromPattern } = await import('../harness/skill-discovery.js')
+    const { generateSkillFromPattern } = await import('./harness/skill-discovery')
     const highPerformers = sqlite.prepare(`
       SELECT name, tool_sequence_json, success_rate, use_count FROM strategy_patterns
       WHERE success_rate > 0.7 AND use_count >= 3
@@ -339,10 +339,10 @@ export async function triggerEvolution(): {
           signature: toolSeq.join('→'),
           frequency: sp.use_count,
           toolSequence: toolSeq,
-          avgDurationMs: 0,
-          successRate: sp.success_rate,
-          commonInputs: [sp.name],
+          recentIntents: [sp.name],
+          firstSeen: Date.now() - 86400000,
           lastSeen: Date.now(),
+          isWorkflow: toolSeq.length >= 3,
         }
         const result = generateSkillFromPattern(pattern)
         if (result.success) skillsCreated++
@@ -366,15 +366,14 @@ export async function triggerEvolution(): {
     evolved: newPatterns > 0 || skillsCreated > 0,
     new_patterns: newPatterns,
     pruned_patterns: pruned.changes,
-    skills_created: skillsCreated,
     generation: newGeneration,
   }
 }
 
 // ─── Internal Helpers ──────────────────────────────────────
 
-function classifyError(errorMsg: string): string {
-  const m = errorMsg.toLowerCase()
+function classifyError(errorMsg: string | undefined): string {
+  const m = (errorMsg || '').toLowerCase()
   if (m.includes('timeout') || m.includes('timed out')) return 'llm_timeout'
   if (m.includes('unauthorized') || m.includes('401') || m.includes('403')) return 'api_auth'
   if (m.includes('rate limit') || m.includes('429')) return 'rate_limit'
@@ -392,7 +391,7 @@ function generateInsight(strategy: string, toolSeq: string[], errorPattern: stri
   return `策略 ${strategy} 遇到 ${errorPattern}，已记录`
 }
 
-function learnErrorPattern(pattern: string, errorMsg: string): void {
+function learnErrorPattern(pattern: string): void {
   const exists = sqlite.prepare('SELECT id, occurrence_count FROM error_patterns WHERE pattern = ?').get(pattern) as any
   if (exists) {
     sqlite.prepare('UPDATE error_patterns SET occurrence_count = occurrence_count + 1, last_seen = ? WHERE id = ?')

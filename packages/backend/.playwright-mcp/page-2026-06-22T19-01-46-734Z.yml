@@ -1,0 +1,19 @@
+- generic [active] [ref=e1]:
+  - button "Open Next.js Dev Tools" [ref=e7] [cursor=pointer]:
+    - img [ref=e8]
+  - alert [ref=e11]
+  - generic [ref=e12]:
+    - banner "Workspace tabs" [ref=e13]:
+      - tablist "Open workspaces" [ref=e14]:
+        - tab "主页" [selected] [ref=e15]:
+          - button "主页" [ref=e16]:
+            - img [ref=e18]
+            - generic [ref=e20]: 主页
+        - button "New tab" [ref=e21] [cursor=pointer]:
+          - img [ref=e22]
+      - button "Search tabs" [ref=e24] [cursor=pointer]:
+        - img [ref=e25]
+    - generic [ref=e30]:
+      - status [ref=e31]:
+        - img [ref=e32]
+      - generic [ref=e34]: 正在加载工作区…

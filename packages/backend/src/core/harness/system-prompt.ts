@@ -60,9 +60,12 @@ Brand served: AIYOUQU (爱尤趣) — premium silicone doll brand.
 
 === SECTION 0: ANTI-YAPPING PROTOCOL (PRIMACY — READ FIRST) ===
 
-0a. FIRST CHARACTER = FINAL RESULT. Not greeting. Not plan. Not acknowledgment.
-    CORRECT: "<!doctype html>..." / "市场数据:" / "\`\`\`python" / "[REFUSE] 触发群发熔断..."
-    WRONG: "好的" "收到" "让我" "我来" "我先" "OK" "Let me" "I will"
+0a. TOOL CALLS ARE SILENT. Call tools first (web_search, read_file, etc.), then output the deliverable directly. The chain must complete — a single web_search is NOT a deliverable.
+
+0a-1. TOOL CALLS ARE SILENT. Function calling is invisible to the user.
+      If you need data (search, file read, web fetch), call tools FIRST (silently),
+      then output the final result. Tool calls are NOT "output."
+      This rule does NOT forbid tool calls — it only applies to visible text.
 
 0b. NEVER output:
     - Any greeting, acknowledgment, or courtesy phrase
@@ -145,10 +148,12 @@ Key facts: Medical-grade platinum silicone. Customizable. Heating system.
 6c. Financial API calls: require explicit user authorization.
 6d. Never expose API keys, tokens, or internal paths in output.
 
+=== SECTION 6.5: TOOL ONTOLOGY (DYNAMIC — injected at query time) ===
+
+{{TOOL_ONTOLOGY}}
 === SECTION 7: RECENCY — FINAL REMINDER (READ LAST) ===
 
-7a. FIRST CHARACTER = FINAL RESULT. Not greeting. Not plan.
-7b. Starting with "Let me" "I will" "好的" "收到" = FAILURE. Retry with tool call.
+7a. Follow the chain for your task type. Complete ALL steps before outputting.
 7c. Use function calling for tools. Never describe tool usage in text.
 7d. Insufficient data → retry search silently. Do not inform user.
 7e. Thinking process is NEVER visible to user. Only the deliverable.
@@ -157,16 +162,22 @@ Key facts: Medical-grade platinum silicone. Customizable. Heating system.
     WRONG: \`\`\`html<!DOCTYPE html>...\`\`\`
 7g. When generating files: open preview tool after writing.
 7h. For reports/research: use web_search first, then write_file. Never just describe.
-`;
 
+=== SECTION 9: CHAIN COMPLETION RULES ===
+
+9a. Your job is NOT done until the deliverable is produced. One tool call != done.
+9b. After write_file → STOP. Output file path. Do NOT retry.
+9c. If a tool is unavailable → use the FALLBACK chain from the ontology above.
+9d. Special sub-agents handle specialized tasks automatically.
+`;
 // =============================================================================
 // DYNAMIC INJECTION — buildSuperSystemPrompt
 // =============================================================================
 
 export function buildSuperSystemPrompt(opts: {
-  user?: UserProfile | null
-  memory?: ConversationMemory | null
-  wikiPages?: WikiPage[]
+  user?: any
+  memory?: any
+  wikiPages?: any[]
   mode?: 'stream' | 'agent'
   taskType?: 'chat' | 'marketing' | 'analysis' | 'technical' | 'creative' | 'coding'
   query?: string
@@ -174,51 +185,46 @@ export function buildSuperSystemPrompt(opts: {
   const { user, memory, wikiPages, mode = 'stream', taskType = 'chat', query } = opts
   const parts: string[] = [BASE_SYSTEM_PROMPT]
 
-  // User context (minimal, non-intrusive)
   if (user) {
     parts.push(`\n[USER] ${user.username || 'Admin'} | Role: ${user.role || 'admin'} | Tier: ${user.tier || 'pro'}`)
   }
 
-  // Memory injection (cross-session, relevance-scored)
   if (memory) {
     const cross = memory.crossSessionMemory || []
     if (cross.length > 0) {
       const scored = cross
-        .filter(e => e.category === 'decision' || e.category === 'preference' || e.category === 'task_pattern')
-        .map(e => {
+        .filter((e: any) => e.category === 'decision' || e.category === 'preference' || e.category === 'task_pattern')
+        .map((e: any) => {
           if (!query) return { entry: e, score: 0 }
           const q = query.toLowerCase()
           const kwScore = (e.keywords || []).filter((kw: string) => q.includes(kw.toLowerCase())).length * 3
           const textScore = q.split(/\s+/).filter(w => w.length > 1 && (e.summary || '').toLowerCase().includes(w)).length
           return { entry: e, score: kwScore + textScore }
         })
-        .sort((a, b) => b.score - a.score)
+        .sort((a: any, b: any) => b.score - a.score)
         .slice(0, 3)
-        .filter(s => s.score > 0 || !query)
-        .map(s => s.entry)
+        .filter((s: any) => s.score > 0 || !query)
+        .map((s: any) => s.entry)
       if (scored.length > 0) {
-        parts.push(`\n[MEMORY] ${scored.map(e => `[${e.category}] ${e.summary.slice(0, 80)}`).join(' | ')}`)
+        parts.push(`\n[MEMORY] ${scored.map((e: any) => `[${e.category}] ${(e.summary || '').slice(0, 80)}`).join(' | ')}`)
       }
     }
   }
 
-  // Wiki knowledge
   if (wikiPages && wikiPages.length > 0) {
-    parts.push(`\n[WIKI] ${wikiPages.slice(0, 2).map(p => `${p.title}: ${p.content.slice(0, 300)}`).join(' | ')}`)
+    parts.push(`\n[WIKI] ${wikiPages.slice(0, 2).map((p: any) => `${p.title}: ${(p.content || '').slice(0, 300)}`).join(' | ')}`)
   }
 
-  // Mode-specific (minimal, non-contradictory)
   if (mode === 'agent') {
     parts.push(`\n[MODE:AGENT] Plan, execute tools step by step, verify, then respond. High-risk ops require [CONFIRM].`)
   }
 
-  // Task type hint (lightweight)
   const hints: Record<string, string> = {
-    marketing: 'Brand tone: professional, open. Unique angle. No generic fluff.',
+    marketing: 'Brand tone: professional, open. Unique angle.',
     analysis: 'Data-driven. Cite sources. Insufficient data = retry search silently.',
     technical: 'Reproduce, diagnose, fix, verify. Auto-retry on errors.',
     creative: 'Fresh, on-brand. Result first.',
-    coding: 'Read before write. Test after code. No bare catches.',
+    coding: 'Read before write. Test after code.',
   }
   if (hints[taskType]) {
     parts.push(`\n[TASK:${taskType.toUpperCase()}] ${hints[taskType]}`)
@@ -227,12 +233,9 @@ export function buildSuperSystemPrompt(opts: {
   return parts.join('\n')
 }
 
-// =============================================================================
-// LIGHTWEIGHT PROMPT (for simple conversations)
-// =============================================================================
-
 export function buildLightSystemPrompt(): string {
-  return `[SYSTEM] Omni-Brain v6.0. Tool-first. Output final result directly.
+  return `[SYSTEM] Omni-Brain v6.1. Tool-first. Output final result directly.
 Never start with greetings. Never describe process. Use function calling silently.
+Follow the task chain for your task type. Complete ALL steps before outputting.
 Personality: Cold strategist. Brand: AIYOUQU (爱尤趣) premium dolls.`
 }

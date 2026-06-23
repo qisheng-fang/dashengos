@@ -316,6 +316,303 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       },
     ],
   },
+  // ================================================================
+  //  7. 短视频批量剪辑 — AI 自动剪辑+字幕+封面
+  //  场景：批量处理产品展示/口播/教程类短视频
+  //  执行链：素材分析 → 自动剪辑 → 字幕生成 → 封面设计 → 导出
+  // ================================================================
+  {
+    id: 'video_batch_edit',
+    name: '短视频批量剪辑',
+    description:
+      '上传原始素材 → AI 自动识别高光片段 → 智能剪辑 + 自动字幕 + 封面生成 → 多平台格式导出。适合产品展示、口播、教程类短视频批量生产。',
+    icon: 'image',
+    category: 'production',
+    estimated_tokens: 6000,
+    steps: [
+      {
+        id: 'step-1-analyze',
+        agent_id: 'researcher',
+        mode: 'pipeline',
+        input_transform:
+          '分析上传的原始视频素材：识别场景切换点、人脸位置、语音片段、画面质量评分。输出时间轴标注和可剪辑片段建议。',
+      },
+      {
+        id: 'step-2-edit',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '根据上一步分析结果，生成剪辑脚本（时间轴/转场/特效/滤镜/BGM），调用视频处理工具执行自动剪辑。输出最终视频文件路径。',
+      },
+      {
+        id: 'step-3-subtitle',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '对剪辑后的视频进行语音识别 → 生成 SRT 字幕文件 → 叠加字幕到视频（支持中英文双语）。检查字幕时间轴对齐和错别字。',
+      },
+      {
+        id: 'step-4-cover',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '从视频中提取最佳帧作为封面候选 → 添加标题文字和品牌元素 → 生成 3 个封面方案（抖音1:1/小红书3:4/YouTube 16:9）。',
+      },
+    ],
+  },
+
+  // ================================================================
+  //  8. 季节性营销策划 — 节日/大促全案生成
+  //  场景：618/双11/圣诞/春节等节点的完整营销方案
+  //  执行链：市场分析 → 策略制定 → 内容生产 → 执行排期
+  // ================================================================
+  {
+    id: 'seasonal_campaign',
+    name: '季节性营销策划',
+    description:
+      '输入节日/大促节点 → 自动生成完整营销策划案：市场分析、人群洞察、内容矩阵、投放策略、ROI预估、执行甘特图。覆盖618/双11/黑五/圣诞/春节等。',
+    icon: 'calendar',
+    category: 'content',
+    estimated_tokens: 8000,
+    steps: [
+      {
+        id: 'step-1-market',
+        agent_id: 'researcher',
+        mode: 'pipeline',
+        input_transform:
+          '分析目标节点的市场趋势：往年数据回顾/竞品动作预判/消费者行为预测/热点话题挖掘。输出结构化市场分析报告。',
+      },
+      {
+        id: 'step-2-strategy',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '制定营销策略：核心主题/目标人群分层/内容矩阵（图文+短视频+直播）/投放预算分配/促销机制设计。输出 3 页策略 PPT 大纲。',
+      },
+      {
+        id: 'step-3-content',
+        agent_id: 'writer',
+        mode: 'parallel',
+        children: [
+          {
+            id: 'step-3a-social',
+            agent_id: 'social_douyin',
+            mode: 'pipeline',
+            input_transform: '生成抖音+小红书预热内容脚本（倒计时/剧透/福利预告），含话题标签矩阵和发布时间建议。',
+          },
+          {
+            id: 'step-3b-live',
+            agent_id: 'writer',
+            mode: 'pipeline',
+            input_transform: '生成直播策划脚本：开场/产品讲解/限时秒杀/互动抽奖/收尾CTA。包含主播话术和场控checklist。',
+          },
+        ],
+      },
+      {
+        id: 'step-4-schedule',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '整合所有内容为执行甘特图：预热期/爆发期/返场期的时间线 → 各渠道内容排期 → 责任人分配 → 预算消耗预估。输出 Excel 可导入格式。',
+      },
+    ],
+  },
+
+  // ================================================================
+  //  9. 用户评论情感分析 — NPS/舆情监控
+  //  场景：定期分析商品评论和社媒提及的情感倾向
+  //  执行链：多源采集 → 情感分类 → 话题聚类 → 行动建议
+  // ================================================================
+  {
+    id: 'sentiment_analysis',
+    name: '用户评论情感分析',
+    description:
+      '采集商品评论 + 社媒提及 + 客服对话 → NLP 情感分类（正面/中性/负面）→ 话题聚类 → 产品改进建议。产出 NPS 趋势图和风险预警。',
+    icon: 'bar-chart-3',
+    category: 'analytics',
+    estimated_tokens: 5000,
+    steps: [
+      {
+        id: 'step-1-collect',
+        agent_id: 'researcher',
+        mode: 'parallel',
+        children: [
+          {
+            id: 'step-1a-reviews',
+            agent_id: 'researcher',
+            mode: 'pipeline',
+            input_transform: '采集各平台最新商品评论（好评/中评/差评各取TOP50），记录评分、文字内容、图片、时间。',
+          },
+          {
+            id: 'step-1b-social',
+            agent_id: 'researcher',
+            mode: 'pipeline',
+            input_transform: '采集社媒平台品牌提及（微博/小红书/抖音），筛选互动量>100的内容进行深度分析。',
+          },
+        ],
+      },
+      {
+        id: 'step-2-analyze',
+        agent_id: 'analyst',
+        mode: 'pipeline',
+        input_transform:
+          '情感分析：正面/中性/负面分类 + 话题聚类（质量/物流/客服/价格/包装）→ 计算 NPS 净推荐值 → 识别高频关键词和情绪峰值时间。',
+      },
+      {
+        id: 'step-3-report',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '生成情感分析报告：①NPS 趋势图描述 ②TOP5 好评/差评摘录 ③话题热度排行 ④风险预警（差评突增/竞品对比）⑤改进建议 TOP3。',
+      },
+    ],
+  },
+
+  // ================================================================
+  // 10. 产品详情页生成 — A+页面自动化
+  //  场景：新品上架需要完整详情页（图文+视频+A+）
+  //  执行链：竞品分析 → 文案生成 → 图片设计 → A+模块 → SEO
+  // ================================================================
+  {
+    id: 'product_detail_page',
+    name: '产品详情页生成',
+    description:
+      '输入产品信息 → 自动分析竞品详情页 → 生成文案（标题/卖点/规格/FAQ）→ 设计图片布局建议 → A+模块内容 → SEO 关键词优化。支持 Shopify/淘宝/独立站。',
+    icon: 'image',
+    category: 'production',
+    estimated_tokens: 7000,
+    steps: [
+      {
+        id: 'step-1-research',
+        agent_id: 'researcher',
+        mode: 'pipeline',
+        input_transform:
+          '分析同类目 TOP10 竞品详情页：标题结构/卖点排列/图片风格/A+模块/价格锚点/评价关键词。输出差异化策略。',
+      },
+      {
+        id: 'step-2-copy',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '生成产品文案：①5个标题备选（含SEO关键词）②核心卖点（5~8条）③产品描述（场景化）④规格参数表 ⑤FAQ（8~12条）⑥品牌故事。',
+      },
+      {
+        id: 'step-3-visual',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '生成视觉方案：主图构图建议（6张）/详情页分屏脚本（10~15屏）/A+模块布局方案（对比表+场景图+细节图）/视频拍摄分镜（15~30秒）。',
+      },
+      {
+        id: 'step-4-seo',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          'SEO 优化：标题关键词密度检查/Search Terms 生成/图片 ALT 标签/ Meta Description / 结构化数据（JSON-LD）/ 内链建议。',
+      },
+    ],
+  },
+
+  // ================================================================
+  // 11. 供应链智能预警 — 库存/物流/质检一体化
+  //  场景：实时监控供应链各环节，提前预警风险
+  //  执行链：数据采集 → 异常检测 → 风险评估 → 应对方案
+  // ================================================================
+  {
+    id: 'supply_chain_alert',
+    name: '供应链智能预警',
+    description:
+      '接入 ERP/WMS 数据 → 实时监控库存周转/物流时效/质检合格率 → 异常自动检测 → 风险评估（缺货/积压/延误）→ 生成应对方案和采购建议。',
+    icon: 'globe',
+    category: 'operation',
+    estimated_tokens: 4000,
+    steps: [
+      {
+        id: 'step-1-monitor',
+        agent_id: 'researcher',
+        mode: 'parallel',
+        children: [
+          {
+            id: 'step-1a-stock',
+            agent_id: 'researcher',
+            mode: 'pipeline',
+            input_transform: '检查库存数据：低库存SKU（<安全库存）/滞销SKU（>90天未动销）/爆款补货需求预测。输出预警清单。',
+          },
+          {
+            id: 'step-1b-logistics',
+            agent_id: 'researcher',
+            mode: 'pipeline',
+            input_transform: '检查物流数据：在途超时订单/妥投率下降/退货率异常/物流差评突增。输出风险清单。',
+          },
+        ],
+      },
+      {
+        id: 'step-2-assess',
+        agent_id: 'analyst',
+        mode: 'pipeline',
+        input_transform:
+          '风险评估：按紧急程度（P0/P1/P2）分类 → 影响面估算（缺货GMV损失/积压仓储成本）→ 根因分析（供应商/季节/促销/物流商）。输出风险矩阵。',
+      },
+      {
+        id: 'step-3-action',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '生成应对方案：①紧急采购清单（供应商/价格/交期对比）②库存调拨建议（跨仓/跨店）③促销清仓方案 ④物流商切换评估。每项含执行步骤和预期效果。',
+      },
+    ],
+  },
+
+  // ================================================================
+  // 12. 多平台直播复盘 — 直播数据深度分析
+  //  场景：直播结束后自动生成复盘报告
+  //  执行链：数据拉取 → 流量分析 → 转化诊断 → 优化建议
+  // ================================================================
+  {
+    id: 'livestream_review',
+    name: '多平台直播复盘',
+    description:
+      '直播结束后 → 自动拉取抖音/淘宝/视频号直播数据 → 流量分析（来源/留存/峰值）→ 转化诊断（商品点击/加购/成交）→ 竞品对比 → 下场优化建议。',
+    icon: 'bar-chart-3',
+    category: 'analytics',
+    estimated_tokens: 5000,
+    steps: [
+      {
+        id: 'step-1-data',
+        agent_id: 'researcher',
+        mode: 'parallel',
+        children: [
+          {
+            id: 'step-1a-metrics',
+            agent_id: 'researcher',
+            mode: 'pipeline',
+            input_transform: '拉取直播核心指标：观看人次/最高在线/平均停留/新增粉丝/互动率（评论+点赞+分享）/音浪/成交额。',
+          },
+          {
+            id: 'step-1b-flow',
+            agent_id: 'researcher',
+            mode: 'pipeline',
+            input_transform: '拉取流量数据：自然流量 vs 付费流量占比/流量来源渠道/每分钟在线人数曲线/观众画像（年龄/性别/地域）。',
+          },
+        ],
+      },
+      {
+        id: 'step-2-diagnose',
+        agent_id: 'analyst',
+        mode: 'pipeline',
+        input_transform:
+          '转化诊断：商品讲解时长 vs 成交转化率/哪个品讲得最好/哪个品流失最多/客单价 vs 件单价/优惠券核销率。对标上一场和同行均值。',
+      },
+      {
+        id: 'step-3-optimize',
+        agent_id: 'writer',
+        mode: 'pipeline',
+        input_transform:
+          '生成复盘报告：①核心数据仪表盘 ②流量-转化漏斗诊断 ③TOP3 亮点和问题 ④下场优化清单（排品顺序/话术调整/时长分配/投放策略）⑤竞品直播间对比分析。',
+      },
+    ],
+  },
+
 ]
 
 export function getTemplates(): WorkflowTemplate[] {

@@ -7,7 +7,7 @@ import { Link, Outlet, useLocation } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
 import { http } from '@/lib/api'
 import { useAuthStore } from '@/lib/auth-store'
-import { Cpu, Plug, Loader2, Crown, Cookie, Timer, Brain, Lightbulb, Stethoscope, Shield, SlidersHorizontal } from 'lucide-react'
+import { Cpu, Plug, Loader2, Crown, Cookie, Timer, Brain, Lightbulb, Stethoscope, Shield, SlidersHorizontal, Activity } from 'lucide-react'
 
 const SUB_PAGES = [
   // Track C.3 · 模型路由 拆 3 子页 (text/multimodal/provider)
@@ -15,7 +15,7 @@ const SUB_PAGES = [
   { to: '/settings/models/custom', label: '自定义模型', icon: SlidersHorizontal, exact: false },
   { to: '/settings/oauth', label: '外部平台 OAuth', icon: Plug },  // D6-3 (2026-06-18)
   { to: '/settings/social-cookies', label: '社交媒体凭证', icon: Cookie },
-  { to: '/settings/automations', label: '定时任务', icon: Timer },
+  { to: '/health', label: '健康', icon: Activity },
   { to: '/settings/memory', label: '记忆管理', icon: Brain },
   { to: '/settings/learnings', label: '学习记录', icon: Lightbulb },
   { to: '/settings/diagnostics', label: '系统诊断', icon: Stethoscope },  // D2 · 仿 Hermes doctor (2026-06-17)

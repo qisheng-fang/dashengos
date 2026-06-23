@@ -4,9 +4,8 @@
 
 import { sqlite } from '../../storage/db.js'
 import { BRAND_KNOWLEDGE } from './system-prompt.js'
-// @ts-expect-error - used by hybridSearch below
 import { semanticSearch, indexMemoryEmbedding, hybridSearch } from './vector-memory.js'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 
 // ─── Types ─────────────────────────────────────────────────
 
@@ -250,7 +249,7 @@ export function loadMemoryContext(userId: string): ConversationMemory {
   const recentTopics = extractRecentTopics(userId)
 
   // 6. Wiki 知识库 (从 wiki 表)
-  const wikiPages = loadWikiPages()
+  const wikiPages = loadWikiPages(recentTopics[0])
 
   // 7. 跨对话记忆 (从 cross_session_memory 表)
   const crossSessionMemory = loadCrossSessionMemory(userId, 8, recentTopics[0] || '')
@@ -414,49 +413,102 @@ export function saveContextEntry(opts: {
  * 加载 Wiki 知识库页面
  * 数据源: wiki 表 + 文件系统 wiki 目录
  */
-function loadWikiPages(): WikiPage[] {
+function loadWikiPages(topic?: string): WikiPage[] {
   const pages: WikiPage[] = []
 
-  // 1. 从 wiki 表读取
+  // 1. 从 wiki 表读取 (SQLite)
   try {
     const rows = sqlite
-      .prepare('SELECT title, content, source, updated_at FROM wiki ORDER BY updated_at DESC LIMIT 5')
+      .prepare('SELECT title, content, source, updated_at FROM wiki ORDER BY updated_at DESC LIMIT 10')
       .all() as Array<{ title: string; content: string; source: string; updated_at: string }>
 
     for (const r of rows) {
       pages.push({
         title: r.title,
-        content: r.content,
+        content: topic ? extractRelevantSections(r.content, topic) : r.content.slice(0, 8000),
         source: r.source || 'wiki_db',
         updatedAt: r.updated_at,
       })
     }
   } catch {
-    // wiki 表不存在, 尝试从文件系统读取
+    // wiki 表不存在, 继续从文件系统读取
   }
 
-  // 2. 从文件系统 wiki 目录读取 (.workbuddy/memory/ 下的 MEMORY.md)
-  if (pages.length === 0) {
-    try {
-      const wikiDir = '/Users/apple/Desktop/ai-workbench-v2/.workbuddy/memory'
-      const memoryFile = `${wikiDir}/MEMORY.md`
+  // 2. 从文件系统读取所有 .md 文件 (.workbuddy/memory/)
+  try {
+    const wikiDir = '/Users/apple/Desktop/ai-workbench-v2/.workbuddy/memory'
+    if (existsSync(wikiDir)) {
+      const files = readdirSync(wikiDir)
+        .filter(f => f.endsWith('.md'))
+        .sort()
+        .reverse()
 
-      if (existsSync(memoryFile)) {
-        const content = readFileSync(memoryFile, 'utf-8')
-        if (content.trim()) {
+      for (const file of files) {
+        const filePath = wikiDir + '/' + file
+        try {
+          const raw = readFileSync(filePath, 'utf-8')
+          if (!raw.trim()) continue
+
+          let selected = raw
+          if (topic && raw.length > 3000) {
+            selected = extractRelevantSections(raw, topic)
+          }
+          if (selected.length > 8000) {
+            const head = raw.slice(0, 3000)
+            const tail = raw.slice(-2000)
+            selected = topic ? extractRelevantSections(raw, topic) : head + '\n\n...\n\n' + tail
+          }
+
           pages.push({
-            title: '项目知识库 (MEMORY.md)',
-            content: content.slice(0, 2000),
-            source: 'file:MEMORY.md',
+            title: file.replace('.md', ''),
+            content: selected,
+            source: 'file:' + file,
             updatedAt: new Date().toISOString(),
           })
-        }
+        } catch { /* skip unreadable files */ }
       }
-    } catch { /* ok */ }
-  }
+    }
+  } catch { /* ok */ }
 
   return pages
 }
+
+// ─── 关键词匹配 ───
+function extractRelevantSections(text: string, topic: string): string {
+  const keywords = topic
+    .toLowerCase()
+    .split(/[\s,，、。；;]+/)
+    .filter((k) => k.length > 1)
+    .slice(0, 8)
+
+  if (keywords.length === 0) return text.slice(0, 8000)
+
+  const sections = text.split(/^## /m)
+  if (sections.length <= 1) return text.slice(0, 8000)
+
+  const relevant = []
+  if (sections[0].trim()) {
+    relevant.push(sections[0].slice(0, 1000))
+  }
+
+  for (let i = 1; i < sections.length; i++) {
+    const section = sections[i]
+    const headerLine = section.split('\n')[0] || ''
+    const sectionLower = (headerLine + ' ' + section.slice(0, 500)).toLowerCase()
+
+    const hits = keywords.filter(k => sectionLower.includes(k))
+    if (hits.length >= 1 || headerLine.length < 3) {
+      relevant.push('## ' + section.slice(0, 2000))
+    }
+  }
+
+  let result = relevant.join('\n\n')
+  if (result.length > 8000) {
+    result = result.slice(0, 8000) + '\n\n...(truncated)'
+  }
+  return result || text.slice(0, 5000)
+}
+
 
 // ─── 辅助 ──────────────────────────────────────────────────
 

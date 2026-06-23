@@ -5,8 +5,22 @@
 import type { ProviderProfile, ChatRequest, ChatResponse } from '../../base.js'
 import { openAIStream, type StreamChunk } from '../../streaming.js'
 
+// Map our friendly names to actual DeepSeek API model names
+const MODEL_MAP: Record<string, string> = {
+  'deepseek-v4-flash': 'deepseek-chat',
+  'deepseek-v4-pro': 'deepseek-reasoner',
+  'deepseek-chat': 'deepseek-chat',
+  'deepseek-reasoner': 'deepseek-reasoner',
+}
+
+function resolveModel(requested: string): string {
+  return MODEL_MAP[requested] || 'deepseek-chat'
+}
+
+// reasoning_content is now propagated by the agent loop directly — no global state needed
+
 async function chatImpl(req: ChatRequest, apiKey: string): Promise<ChatResponse> {
-  const model = req.model || 'deepseek-chat'
+  const model = resolveModel(req.model || 'deepseek-chat')
 
   const body: Record<string, any> = {
     model,
@@ -45,6 +59,7 @@ async function chatImpl(req: ChatRequest, apiKey: string): Promise<ChatResponse>
   const choice = data.choices?.[0]
   return {
     content: choice?.message?.content || '',
+    reasoning_content: choice?.message?.reasoning_content || undefined,
     model: data.model,
     usage: data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     finish_reason: choice?.finish_reason || 'stop',
@@ -54,7 +69,7 @@ async function chatImpl(req: ChatRequest, apiKey: string): Promise<ChatResponse>
 
 /** 流式输出 */
 async function* chatStreamImpl(req: ChatRequest, apiKey: string, signal?: AbortSignal): AsyncGenerator<StreamChunk> {
-  const model = req.model || 'deepseek-chat'
+  const model = resolveModel(req.model || 'deepseek-chat')
 
   const body: Record<string, unknown> = {
     model,
@@ -69,12 +84,15 @@ async function* chatStreamImpl(req: ChatRequest, apiKey: string, signal?: AbortS
     body.tool_choice = req.tool_choice || 'auto'
   }
 
-  yield* openAIStream('https://api.deepseek.com/v1/chat/completions', apiKey, body, signal)
+  let streamReasoning = ''
+  for await (const chunk of openAIStream('https://api.deepseek.com/v1/chat/completions', apiKey, body, signal)) {
+    if (chunk.type === 'thinking') streamReasoning += (chunk.meta as any)?.reasoning_text || ''
+    yield chunk
+  }
 }
 
 async function listModelsImpl(_apiKey: string): Promise<string[]> {
-  // DeepSeek 公开模型列表
-  return ['deepseek-v4-flash', 'deepseek-v4-pro']
+  return ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner']
 }
 
 async function testImpl(apiKey: string): Promise<{ ok: boolean; latency_ms: number; error?: string }> {
@@ -84,7 +102,7 @@ async function testImpl(apiKey: string): Promise<{ ok: boolean; latency_ms: numb
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: 'deepseek-v4-flash',
+        model: resolveModel('deepseek-v4-flash'),
         messages: [{ role: 'user', content: 'hi' }],
         max_tokens: 5,
       }),

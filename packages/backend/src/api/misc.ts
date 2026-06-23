@@ -264,14 +264,28 @@ const EmbedBody = z.object({
 
 export async function modelRoutes(app: FastifyInstance) {
   app.get('/', { preHandler: [app.authenticate] }, async (_req, reply) => {
+    // 仅展示已配置 API Key 的可用模型
+    const models: Array<{ id: string; provider: string; healthy: boolean }> = []
+
+    // 主力: DeepSeek
+    if (config.DEEPSEEK_API_KEY) {
+      models.push({ id: `deepseek:${config.DEEPSEEK_MODEL || 'deepseek-v4-pro'}`, provider: 'deepseek', healthy: true })
+    }
+
+    // 备用: SiliconFlow
+    if (config.SILICONFLOW_API_KEY) {
+      models.push({ id: `siliconflow:${config.SILICONFLOW_DEFAULT_MODEL}`, provider: 'siliconflow', healthy: true })
+    }
+
+    const provider = config.LLM_PROVIDER || 'deepseek'
+    const defaultModel = process.env[provider.toUpperCase() + '_DEFAULT_MODEL'] 
+      || process.env[provider.toUpperCase() + '_MODEL']
+      || config.DEFAULT_MODEL
+
     return reply.send({
-      models: [
-        { id: 'ollama:qwen2.5:3b', provider: 'ollama', healthy: true },
-        { id: 'ollama:qwen2.5:7b', provider: 'ollama', healthy: true },
-        { id: 'openai:gpt-4o', provider: 'openai', healthy: false },
-      ],
-      ollama_host: config.OLLAMA_HOST,
-      default_model: config.DEFAULT_MODEL,
+      models,
+      default_model: defaultModel,
+      llm_provider: provider,
     })
   })
 
@@ -488,8 +502,59 @@ export async function modelRoutes(app: FastifyInstance) {
 // files.ts (4 端点) — P1: 当前全部 stub，待实现真实文件存储
 // ====================================================================
 export async function fileRoutes(app: FastifyInstance) {
-  app.post('/upload', { preHandler: [app.authenticate] }, async (_req, reply) => {
-    return reply.code(501).send({ code: 'NOT_IMPLEMENTED' })
+  app.get('/', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const query = (req.query as { path?: string }) || {}
+    const dirPath = query.path || '/Users/apple/Desktop/ai-workbench-v2'
+    try {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+      const files = entries.slice(0, 50).map(e => ({
+        name: e.name,
+        path: path.join(dirPath, e.name),
+        isDir: e.isDirectory(),
+      }))
+      return reply.send({ files, path: dirPath })
+    } catch {
+      return reply.code(404).send({ code: 'DIR_NOT_FOUND' })
+    }
+  })
+  // POST /api/v1/files/upload — 接受所有文件类型，保存到 workspace/uploads/
+  app.post('/upload', { preHandler: [app.authenticate] }, async (req, reply) => {
+    try {
+      const data = await req.file()
+      if (!data) return reply.code(400).send({ code: 'NO_FILE', message: '未选择文件' })
+      
+      const fs = await import('fs')
+      const path = await import('path')
+      const crypto = await import('crypto')
+      
+      const uploadDir = path.join(
+        process.env.DASHE_WORKSPACE || '/Users/apple/Desktop/ai-workbench-v2',
+        'uploads'
+      )
+      fs.mkdirSync(uploadDir, { recursive: true })
+      
+      // 生成唯一文件名：时间戳_随机_原始文件名
+      const safeName = data.filename.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, '_')
+      const uniqueId = crypto.randomBytes(6).toString('hex')
+      const storedName = `${Date.now()}_${uniqueId}_${safeName}`
+      const filePath = path.join(uploadDir, storedName)
+      
+      await fs.promises.writeFile(filePath, await data.toBuffer())
+      
+      const stats = fs.statSync(filePath)
+      return reply.send({
+        ok: true,
+        filename: data.filename,
+        storedName,
+        path: filePath,
+        size: stats.size,
+        mimeType: data.mimetype,
+      })
+    } catch (err: any) {
+      return reply.code(500).send({ code: 'UPLOAD_FAILED', message: err.message || '上传失败' })
+    }
   })
   app.get('/:id', { preHandler: [app.authenticate] }, async (_req, reply) => {
     return reply.code(404).send({ code: 'FILE_NOT_FOUND' })

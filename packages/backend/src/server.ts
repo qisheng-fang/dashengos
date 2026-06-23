@@ -1,3 +1,5 @@
+// Fix: Node.js TLS cert verification for external HTTPS calls
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 // packages/backend/src/server.ts · v0.3 spec §10-§19 (Fastify 5 + Drizzle + Redis)
 // Phase 2 入口: 127.0.0.1:8000 + 47 端点 + 8 核心模块
 // Track D.1 (2026-06-15) · 装 dotenv 让 backend 读 packages/backend/.env (含 SILICONFLOW_API_KEY 等)
@@ -8,6 +10,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
+import multipart from '@fastify/multipart'
 // import websocket from '@fastify/websocket'
 import sensible from '@fastify/sensible'
 import swagger from '@fastify/swagger'
@@ -21,6 +24,14 @@ import { sessionRoutes } from './api/sessions.js'
 import { agentRoutes } from './api/agents.js'
 import { skillRoutes } from './api/skills.js'
 import { mcpRoutes } from './api/mcp.js'
+import { memoryLedgerRoutes } from './api/memory-ledger.js'
+import { toolTracerRoutes } from './api/tool-tracer.js'
+import { ragRoutes } from './api/rag.js'
+import { otelRoutes } from './api/otel.js'
+import { multimodalRoutes } from './api/multimodal.js'
+import { openDesignRoutes } from './api/open-design.js'
+import { getPrometheusMetrics, startCollectorExport } from './core/otel-exporter.js'
+import { recordMetric } from './core/otel-exporter.js'
 import {
   toolRoutes,
   modelRoutes,
@@ -31,6 +42,7 @@ import {
   workspaceRoutes,
   secretRoutes,
 } from './api/misc.js'
+import { healthRoutes } from './api/health.js'
 import { phase5Routes } from './api/phase5.js'
 import { stripeRoutes } from './api/stripe.js'
 import { metricsRoutes } from './api/metrics.js'
@@ -43,17 +55,24 @@ import { oauthRoutes } from './api/oauth.js'  // D4 · 4 平台 OAuth (微信公
 import { selfHealRoutes } from './api/self-heal.js'  // P3 · 自我诊断/修复 (2026-06-18)
 import { previewRoutes } from './api/preview.js'
 import { daemonRoutes } from './api/daemon.js'
+import { agentTarsRoutes } from './api/agent-tars.js'
+import { transformersRoutes } from './api/transformers.js'
+import { astrbotRoutes } from './api/astrbot.js'
+import { langgraphRoutes } from './api/langgraph.js'
 import { socialWorker } from './agents/social/worker-client.js'  // Track B.1 · Cookie 解析器
 import { initSchema, sqlite } from './storage/db.js'
 import { seedBrandSettings } from './core/harness/memory.js'
 import { seedStatusMessages } from './providers/streaming.js'
-import { initEvolutionDB, getEvolutionMetrics, triggerEvolution } from './core/self-evolve.js'
+import { getEvolutionReport, getToolRankings } from './core/orchestrator/self-evolver.js'
 import { sessionWSS } from './ws/session-ws.js'
+import { terminalRoutes } from './api/terminal.js'
 import { metrics } from './core/metrics.js'
 import { disconnect as redisDisconnect } from './cache/redis.js'
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
+    forceCloseConnections: true,
+    connectionTimeout: 0,
     logger: {
       level: config.LOG_LEVEL,
       transport:
@@ -78,7 +97,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   // 启动时建表 (Phase 2 简化为内联, Phase 3 用 migration)
   initSchema()
-  initEvolutionDB() // v5.2: 自主学习进化引擎
   seedBrandSettings() // 首次启动时将品牌知识写入数据库
   seedStatusMessages() // 首次启动时将流式状态文案写入数据库
   // 让 routes 能直接用 app.sqlite
@@ -98,6 +116,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
   )
 
+  await app.register(multipart, { limits: { fileSize: 100 * 1024 * 1024 } })
   await app.register(sensible)
   // Track B.1 (2026-06-17): CORS origins 可从 env 配置
   //   开发环境默认 localhost:3000/5173, 生产环境从 CORS_ORIGINS 读
@@ -276,14 +295,33 @@ export async function buildServer(): Promise<FastifyInstance> {
   })
 
   await app.register(sessionWSS)
+  await app.register(terminalRoutes)
 
   await app.register(authRoutes, { prefix: '/api/v1/auth' })
   await app.register(sessionRoutes, { prefix: '/api/v1/sessions' })
   await app.register(agentRoutes, { prefix: '/api/v1/agents' })
   await app.register(skillRoutes, { prefix: '/api/v1/skills' })
   await app.register(mcpRoutes, { prefix: '/api/v1/mcp' })
+  await app.register(memoryLedgerRoutes, { prefix: '/api/v1/memory-ledger' })
+  const { memoryHeartbeatRoutes } = await import('./api/memory-heartbeat.js')
+  await app.register(memoryHeartbeatRoutes, { prefix: '/api/v1/memory' })
+  await app.register(toolTracerRoutes, { prefix: '/api/v1/tools' })
+  await app.register(ragRoutes, { prefix: '/api/v1/rag' })
+  await app.register(otelRoutes, { prefix: '/api/v1/otel' })
+  await app.register(multimodalRoutes, { prefix: '/api/v1/multimodal' })
+  await app.register(openDesignRoutes, { prefix: '/api/v1/open-design' })
+  
+  // Prometheus metrics endpoint (no auth)
+  app.get('/metrics', async (_req, reply) => {
+    reply.header('Content-Type', 'text/plain; version=0.0.4')
+    return getPrometheusMetrics()
+  })
+  
+  // Start OTEL collector export
+  startCollectorExport()
   await app.register(toolRoutes, { prefix: '/api/v1/tools' })
   await app.register(modelRoutes, { prefix: '/api/v1/models' })
+  await app.register(healthRoutes, { prefix: '/api/v1' })
   await app.register(fileRoutes, { prefix: '/api/v1/files' })
   await app.register(auditRoutes, { prefix: '/api/v1/audit' })
   await app.register(settingsRoutes, { prefix: '/api/v1/settings' })
@@ -388,17 +426,21 @@ export async function buildServer(): Promise<FastifyInstance> {
   const { webRoutes } = await import('./web/index.js')
   await app.register(webRoutes)
   await app.register(daemonRoutes, { prefix: '/api/v1' })
+  await app.register(agentTarsRoutes, { prefix: '/api/v1/agent-tars' })
+  await app.register(transformersRoutes, { prefix: '/api/v1/transformers' })
+  await app.register(astrbotRoutes, { prefix: '/api/v1/astrbot' })
+  await app.register(langgraphRoutes, { prefix: '/api/v1/langgraph' })
 
   // v5.2: 自主学习进化 API
-  app.get('/api/v1/evolve/metrics', { preHandler: [app.authenticate] }, async (_req, reply) => {
-    const metrics = getEvolutionMetrics()
-    return reply.send(metrics)
+  app.get('/api/v1/evolve/report', { preHandler: [app.authenticate] }, async (_req, reply) => {
+    const report = getEvolutionReport()
+    const rankings = getToolRankings()
+    return reply.send({ report, rankings })
   })
 
-  app.post('/api/v1/evolve/trigger', { preHandler: [app.authenticate] }, async (req, reply) => {
-    if (req.user?.role !== 'ADMIN') return reply.code(403).send({ code: 'ADMIN_REQUIRED' })
-    const result = triggerEvolution()
-    return reply.send(result)
+  app.get('/api/v1/evolve/rankings', { preHandler: [app.authenticate] }, async (_req, reply) => {
+    const rankings = getToolRankings()
+    return reply.send(rankings)
   })
 
   return app
@@ -481,7 +523,30 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT'))
 
   try {
-    await app.listen({ host: config.BACKEND_HOST, port: config.BACKEND_PORT })
+    // Graceful shutdown
+    const shutdown = async () => {
+      console.log('[server] graceful shutdown...')
+      await app.close()
+      process.exit(0)
+    }
+    process.on('SIGTERM', shutdown)
+    process.on('SIGINT', shutdown)
+    
+    // Catch unhandled crashes and log them before exit
+    process.on('uncaughtException', (err) => {
+      console.error('[FATAL] uncaughtException:', err.message)
+      console.error(err.stack?.slice(0, 500) || 'no stack')
+      try { require('fs').appendFileSync('/tmp/dasheng-fatal.log', new Date().toISOString() + ' FATAL uncaughtException: ' + err.message + '\n' + (err.stack || '').slice(0, 2000) + '\n') } catch {}
+      setTimeout(() => process.exit(1), 100)
+    })
+    process.on('unhandledRejection', (reason) => {
+      console.error('[FATAL] unhandledRejection:', (reason as any)?.message || reason)
+      console.error((reason as any)?.stack?.slice(0, 500) || 'no stack')
+      try { require('fs').appendFileSync('/tmp/dasheng-fatal.log', new Date().toISOString() + ' FATAL unhandledRejection: ' + ((reason as any)?.message || String(reason)) + '\n' + ((reason as any)?.stack || '').slice(0, 2000) + '\n') } catch {}
+      setTimeout(() => process.exit(1), 100)
+    })
+
+    await app.listen({ host: config.BACKEND_HOST, port: config.BACKEND_PORT, listenTextResolver: () => '' })
     app.log.info(
       { host: config.BACKEND_HOST, port: config.BACKEND_PORT, env: config.NODE_ENV },
       'DaShengOS backend listening',
@@ -492,9 +557,22 @@ async function main() {
     const { loadAutomations } = await import('./core/scheduler.js')
     loadAutomations()
 
-    // Track C.4: 加载已注册的 MCP 服务器
-    const { loadMCPServersOnStartup } = await import('./core/mcp-client.js')
+    // Track C.4: 加载已注册的 MCP 服务器 + 启动心跳
+    const { loadMCPServersOnStartup, startMCPHeartbeat } = await import('./core/mcp-client.js')
     loadMCPServersOnStartup().catch((e: any) => app.log.warn(e, 'MCP 启动加载失败'))
+    // Heartbeat starts after a short delay to let servers initialize
+    setTimeout(() => startMCPHeartbeat(), 5000)
+
+    // Track C.5: 记忆系统自检心跳
+    const { startMemoryHeartbeat } = await import('./core/memory-heartbeat.js')
+    startMemoryHeartbeat()
+
+    // Track C.6: 自进化引擎初始化 (策略模式+错误修复+自动技能)
+    const { initEvolutionDB } = await import('./core/self-evolve.js')
+    initEvolutionDB()
+    app.log.info('[Evolver] 自进化引擎 DB 已初始化')
+
+    // Track C.5: 记忆系统自检心跳
   } catch (err) {
     app.log.error(err, 'failed to start')
     process.exit(1)

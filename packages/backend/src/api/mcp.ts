@@ -4,7 +4,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { sqlite } from '../storage/db.js'
-import { startMCPServer, stopMCPServer } from '../core/mcp-client.js'
+import { startMCPServer, stopMCPServer, getMCPHealthStatus, startMCPHeartbeat, stopMCPHeartbeat } from '../core/mcp-client.js'
 
 const RegisterSchema = z.object({
   name: z.string().min(1).max(128),
@@ -129,5 +129,34 @@ export async function mcpRoutes(app: FastifyInstance) {
     } catch (e: any) {
       return reply.code(500).send({ error: e.message })
     }
+  })
+
+  // GET /health — MCP 服务器实时健康状态
+  app.get('/health', { preHandler: [app.authenticate] }, async (_req, reply) => {
+    try {
+      const servers = getMCPHealthStatus()
+      const online = servers.filter(s => s.online).length
+      const total = servers.length
+      return reply.send({
+        status: online === total ? 'healthy' : online > 0 ? 'degraded' : 'offline',
+        online,
+        total,
+        servers,
+      })
+    } catch (e: any) {
+      return reply.code(500).send({ error: e.message })
+    }
+  })
+
+  // POST /heartbeat/start — 启动心跳检测
+  app.post('/heartbeat/start', { preHandler: [app.authenticate] }, async (_req, reply) => {
+    startMCPHeartbeat()
+    return reply.send({ heartbeat: 'started', interval: '30s' })
+  })
+
+  // POST /heartbeat/stop — 停止心跳检测
+  app.post('/heartbeat/stop', { preHandler: [app.authenticate] }, async (_req, reply) => {
+    stopMCPHeartbeat()
+    return reply.send({ heartbeat: 'stopped' })
   })
 }

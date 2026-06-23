@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>DaShengOS 全面审计报告 — 2026-06-23 20:33:29</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0e0e0;font-family:-apple-system,sans-serif;padding:24px;line-height:1.6}
+h1{color:#0df0ff;margin-bottom:4px}
+h2{color:#0df0ff;margin:24px 0 12px;font-size:18px;border-bottom:1px solid #1e1e2e;padding-bottom:8px}
+.meta{color:#666;font-size:12px;margin-bottom:24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
+.card{background:#12121f;border:1px solid #1e1e2e;border-radius:8px;padding:12px}
+.card .label{font-size:11px;color:#888;text-transform:uppercase}
+.card .value{font-size:20px;font-weight:700;margin-top:4px}
+.up{color:#4ade80}.down{color:#f87171}.warn{color:#fbbf24}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:6px 10px;text-align:left;font-size:13px;border-bottom:1px solid #1e1e2e}
+th{color:#888;font-size:11px;text-transform:uppercase}
+.pass{color:#4ade80}.fail{color:#f87171}
+.summary{background:#12121f;border:1px solid #1e1e2e;border-radius:12px;padding:20px;margin:16px 0}
+</style>
+</head>
+<body>
+
+<h1>🩺 DaShengOS 全面审计报告</h1>
+<div class="meta">生成时间: 2026-06-23 20:33:29 · 审计范围: 端口/心跳/路由/模块交叉验证</div>
+
+<h2>📡 端口存活</h2>
+<div class="grid">
+<div class="card"><div class="label">前端 Vite</div><div class="value down">🔴 DOWN</div></div>
+<div class="card"><div class="label">Open Design</div><div class="value down">🔴 DOWN</div></div>
+<div class="card"><div class="label">OpenMontage</div><div class="value down">🔴 DOWN</div></div>
+<div class="card"><div class="label">后端 Fastify</div><div class="value down">🔴 DOWN</div></div>
+<div class="card"><div class="label">Agent Bridge</div><div class="value down">🔴 DOWN</div></div>
+<div class="card"><div class="label">Redis</div><div class="value down">🔴 DOWN</div></div>
+
+</div>
+
+<h2>📊 核心指标</h2>
+<div class="grid">
+<div class="card"><div class="label">后端 Uptime</div><div class="value up">466s</div></div>
+<div class="card"><div class="label">占用内存</div><div class="value up">102MB</div></div>
+<div class="card"><div class="label">Health Score</div><div class="value up">100</div></div>
+<div class="card"><div class="label">会话数</div><div class="value up">20</div></div>
+<div class="card"><div class="label">MCP 在线</div><div class="value up">0/4</div></div>
+<div class="card"><div class="label">工作流模板</div><div class="value up">12</div></div>
+<div class="card"><div class="label">自动化任务</div><div class="value up">5</div></div>
+<div class="card"><div class="label">Redis</div><div class="value up">🟢 UP</div></div>
+<div class="card"><div class="label">前端</div><div class="value up">🟢 UP</div></div>
+</div>
+
+<h2>💓 心跳与持久化</h2>
+<table>
+<tr><th>检查项</th><th>状态</th><th>详情</th></tr>
+<tr><td>Memory Heartbeat</td><td class="pass">✅ 正常</td><td>30s 间隔; SQLite: OK; 表: OK; 衰减: 0条</td></tr>
+<tr><td>DB 表状态</td><td class="pass">✅ 正常</td><td>sessions: 20条, messages: 59条</td></tr>
+<tr><td>Redis</td><td class=pass">✅ PONG</td><td>127.0.0.1:6379</td></tr>
+<tr><td>后端 PID</td><td class="pass">✅ 52309</td><td>Fastify + SQLite + MCP</td></tr>
+</table>
+
+<h2>🔀 API 路由端到端</h2>
+<table>
+<tr><th>端点</th><th>HTTP</th><th>分类</th></tr>
+<tr><td>Health Ping</td><td class="pass">200</td><td>健康</td></tr>
+<tr><td>Health Full</td><td class="pass">200</td><td>健康</td></tr>
+<tr><td>Health Map</td><td class="pass">200</td><td>健康</td></tr>
+<tr><td>Health Log</td><td class="pass">200</td><td>健康</td></tr>
+<tr><td>Sessions</td><td class="pass">200</td><td>会话</td></tr>
+<tr><td>MCP Health</td><td class="pass">200</td><td>MCP</td></tr>
+<tr><td>MCP Servers</td><td class="pass">200</td><td>MCP</td></tr>
+<tr><td>Automations</td><td class="pass">200</td><td>自动化</td></tr>
+<tr><td>Orch Templates</td><td class="pass">200</td><td>编排</td></tr>
+<tr><td>Memory Ledger</td><td class="pass">200</td><td>记忆</td></tr>
+<tr><td>Memory Health</td><td class="pass">200</td><td>心跳</td></tr>
+<tr><td>Terminal</td><td class="pass">200</td><td>终端</td></tr>
+<tr><td>Browser Status</td><td class="pass">200</td><td>浏览器</td></tr>
+<tr><td>Evolve Report</td><td class="pass">200</td><td>进化</td></tr>
+<tr><td>Tool Stats</td><td class="pass">200</td><td>追踪</td></tr>
+<tr><td>Multimodal</td><td class="pass">200</td><td>多模态</td></tr>
+<tr><td>Open Design</td><td class="pass">200</td><td>设计</td></tr>
+<tr><td>System Status</td><td class="pass">200</td><td>系统</td></tr>
+
+</table>
+
+<h2>🖥️ 健康拓扑节点</h2>
+<table>
+<tr><th>节点</th><th>状态</th><th>延迟</th><th>分类</th><th>详情</th></tr>
+<tr><td>后端端口 :8000</td><td class="pass">healthy</td><td>1ms</td><td>core</td><td style="font-size:11px;color:#888">Fastify 监听中</td></tr>
+<tr><td>前端端口 :3000</td><td class="pass">healthy</td><td>1ms</td><td>core</td><td style="font-size:11px;color:#888">SPA 服务中</td></tr>
+<tr><td>Auth 认证</td><td class="pass">healthy</td><td>4ms</td><td>core</td><td style="font-size:11px;color:#888">登录正常</td></tr>
+<tr><td>SQLite 数据库</td><td class="pass">healthy</td><td>0ms</td><td>database</td><td style="font-size:11px;color:#888">9.6MB</td></tr>
+<tr><td>Redis 缓存</td><td class="pass">healthy</td><td>1ms</td><td>database</td><td style="font-size:11px;color:#888">连接正常</td></tr>
+<tr><td>DeepSeek API</td><td class="pass">healthy</td><td>92ms</td><td>llm</td><td style="font-size:11px;color:#888">Key有效</td></tr>
+<tr><td>MCP: Playwright Browser</td><td class="pass">healthy</td><td>0ms</td><td>mcp</td><td style="font-size:11px;color:#888">运行中</td></tr>
+<tr><td>MCP: Xcode Build MCP</td><td class="pass">healthy</td><td>0ms</td><td>mcp</td><td style="font-size:11px;color:#888">运行中</td></tr>
+<tr><td>MCP: Codex Security</td><td class="pass">healthy</td><td>0ms</td><td>mcp</td><td style="font-size:11px;color:#888">运行中</td></tr>
+<tr><td>MCP: Agnes AI</td><td class="pass">healthy</td><td>0ms</td><td>mcp</td><td style="font-size:11px;color:#888">运行中</td></tr>
+<tr><td>外网连通</td><td class="pass">healthy</td><td>90ms</td><td>network</td><td style="font-size:11px;color:#888">DeepSeek/Google/GitHub可达</td></tr>
+<tr><td>DNS 解析</td><td class="pass">healthy</td><td>0ms</td><td>network</td><td style="font-size:11px;color:#888">github.com 可解析</td></tr>
+<tr><td>磁盘空间</td><td class="pass">healthy</td><td>0ms</td><td>system</td><td style="font-size:11px;color:#888">10GB 可用 / 931GB (2%)</td></tr>
+<tr><td>内存</td><td class="pass">healthy</td><td>0ms</td><td>system</td><td style="font-size:11px;color:#888">209MB 可用, pressure: unknown</td></tr>
+<tr><td>记忆系统 (SQLite)</td><td class="pass">healthy</td><td>0ms</td><td>database</td><td style="font-size:11px;color:#888">79 条记录 | 衰减0条 | 心跳正常</td></tr>
+
+</table>
+
+<h2>🔌 MCP 服务器</h2>
+<table>
+<tr><th>服务器</th><th>状态</th><th>工具数</th></tr>
+<tr><td>Playwright Browser</td><td class="fail">❌ 离线</td><td>?</td></tr>
+<tr><td>Xcode Build MCP</td><td class="fail">❌ 离线</td><td>?</td></tr>
+<tr><td>Codex Security</td><td class="fail">❌ 离线</td><td>?</td></tr>
+<tr><td>Agnes AI</td><td class="fail">❌ 离线</td><td>?</td></tr>
+
+</table>
+
+<div class="summary">
+<h2>📋 审计摘要</h2>
+<table>
+<tr><td>端口存活</td><td class="pass">5/6 UP</td><td>❌ 前端 Vite, ❌ Open Design, ❌ OpenMontage, ❌ 后端 Fastify, ❌ Agent Bridge, ❌ Redis</td></tr>
+<tr><td>API 路由</td><td class="pass">18/18 通过</td><td>0 个 5xx 错误</td></tr>
+<tr><td>心跳机制</td><td class="pass">✅ 正常</td><td>Memory Heartbeat 30s 间隔, SQLite + Redis 双持久化</td></tr>
+<tr><td>健康拓扑</td><td class="pass">15 节点</td><td>Score: 100</td></tr>
+<tr><td>MCP</td><td class="pass">0/4 在线</td><td></td></tr>
+<tr><td>工作流模板</td><td class="pass">12 套</td><td></td></tr>
+<tr><td>数据库</td><td class="pass">✅ SQLite + Redis</td><td>sessions: 20条 · messages: 59条</td></tr>
+<tr><td>前端</td><td class=pass">✅ http://127.0.0.1:3000/</td><td></td></tr>
+</table>
+</div>
+
+<p style="color:#666;font-size:11px;margin-top:24px">DaShengOS · 全面审计 · 2026-06-23 20:33:29</p>
+</body></html>

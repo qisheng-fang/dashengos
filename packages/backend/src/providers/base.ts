@@ -16,6 +16,7 @@ export interface ChatRequest {
 
 export interface ChatResponse {
   content: string
+  reasoning_content?: string
   model: string
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
   finish_reason: string

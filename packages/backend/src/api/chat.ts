@@ -2,8 +2,10 @@
 //  v2.0: DeerFlow + 文档闭环
 //  v3.0: ★ SSE 流式输出 — token 级实时响应（对标 WorkBuddy）
 
+import { recordMetric } from '../core/otel-exporter.js'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { sqlite } from '../storage/db.js'
 import { Buffer } from 'node:buffer'
 import { connect as netConnect } from 'node:net'
 import { randomUUID } from 'node:crypto'
@@ -58,8 +60,11 @@ async function pollTask(taskId: string, maxAttempts = 90): Promise<unknown> {
 }
 
 const ChatSchema = z.object({
+  model: z.string().optional(),
   message: z.string().min(1).max(10000),
   threadId: z.string().optional(),
+  mode: z.enum(['yolo', 'ask', 'safe']).optional().default('ask'),
+  projectPath: z.string().optional().default(''),
   history: z.array(z.object({
     role: z.enum(['user', 'assistant', 'system']),
     content: z.string(),
@@ -176,7 +181,7 @@ export async function chatRoutes(app: FastifyInstance) {
     const parsed = ChatSchema.safeParse(req.body)
     if (!parsed.success) return reply.code(400).send({ code: 'VALIDATION_FAILED', details: parsed.error.issues })
 
-    const { message, threadId: clientThreadId } = parsed.data
+    const { message, threadId: clientThreadId, mode: approvalMode } = parsed.data
     const threadId = clientThreadId ?? `th_${Date.now().toString(36)}`
     const docIntent = detectDocIntent(message)
 
@@ -189,6 +194,7 @@ export async function chatRoutes(app: FastifyInstance) {
     if (isSimpleGreeting) {
       try {
         const answer = await directLLM(message, parsed.data.history)
+        recordMetric('chat_requests_total', 1, 'counter', {})
         return reply.send({
           threadId,
           status: 'completed',
@@ -302,18 +308,18 @@ export async function chatRoutes(app: FastifyInstance) {
     const parsed = ChatSchema.safeParse(req.body)
     if (!parsed.success) return reply.code(400).send({ code: 'VALIDATION_FAILED', details: parsed.error.issues })
 
-    const { message, history } = parsed.data
+    const { message, history, mode: approvalMode, model } = parsed.data
     const user = req.user as { sub?: string; id?: string; role?: string }
     const userId = user?.sub || user?.id || 'anonymous'
     const workspaceDir = '/Users/apple/Desktop/ai-workbench-v2'
 
     try {
-      const { runAgentLoop } = await import('../core/agent/loop.js')
-      const result = await runAgentLoop(message, history, {
+      const { runOrchestrator } = await import('../core/orchestrator/index.js')
+      const sessionId = crypto.randomUUID?.() || 'sess_' + Date.now()
+      const result = await runOrchestrator(message, history, {
         userId,
+        sessionId,
         workspaceDir,
-        elevatedMode: false, // default: only low+medium risk tools
-        maxIterations: 25,
       })
 
       // Audit log for agent operations
@@ -324,31 +330,20 @@ export async function chatRoutes(app: FastifyInstance) {
           severity: result.success ? 'INFO' : 'WARN',
           action: 'chat.agent',
           user_id: userId,
-          target: 'agent_loop',
-          args_json: JSON.stringify({ steps: result.steps.length }),
-          result_summary: `${result.success ? 'completed' : 'error'} in ${result.steps.reduce((s, t) => s + t.durationMs, 0)}ms`,
-          duration_ms: result.steps.reduce((s, t) => s + t.durationMs, 0),
+          target: 'orchestrator',
+          args_json: JSON.stringify({ phases: result.phases }),
+          result_summary: `${result.success ? 'completed' : 'error'}`,
+          duration_ms: 0,
         })
       } catch {/* audit failure is non-fatal */}
-
-      // If confirmation needed, return special status
-      if (result.needsConfirmation && result.needsConfirmation.length > 0) {
-        return reply.send({
-          threadId: `th_${Date.now().toString(36)}`,
-          status: 'awaiting_confirmation',
-          report: result.response,
-          confirmations: result.needsConfirmation,
-          steps: result.steps.length,
-        })
-      }
 
       return reply.send({
         threadId: `th_${Date.now().toString(36)}`,
         status: result.success ? 'completed' : 'error',
         report: result.response,
         error: result.error,
-        steps: result.steps.length,
-        tokensUsed: result.totalTokens,
+        filesWritten: result.filesWritten,
+        phases: result.phases,
       })
     } catch (e: any) {
       req.log.error({ err: e.message }, 'Agent loop crashed')
@@ -366,7 +361,7 @@ export async function chatRoutes(app: FastifyInstance) {
     const parsed = ChatSchema.safeParse(req.body)
     if (!parsed.success) return reply.code(400).send({ code: 'VALIDATION_FAILED', details: parsed.error.issues })
 
-    const { message, history } = parsed.data
+    const { message, history, mode: approvalMode, model } = parsed.data
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -395,50 +390,57 @@ export async function chatRoutes(app: FastifyInstance) {
       const userId = user?.sub || user?.id || 'anonymous'
       const sessionId = crypto.randomUUID?.() || 'sess_' + Date.now()
 
-      const harnessPrompt = buildSystemPrompt(message)
+      const harnessPrompt = await (async () => {
+  const base = await buildSystemPrompt(message)
+  try {
+    const { buildDynamicToolOntology } = await import('../core/harness/tool-ontology.js')
+    const ontology = buildDynamicToolOntology(message)
+    return base.replace('{{TOOL_ONTOLOGY}}', ontology)
+  } catch {
+    return base.replace('{{TOOL_ONTOLOGY}}', '## TOOLS: Use function calling. Available tools listed in function definitions.')
+  }
+})()
 
       // 发送初始状态
       reply.raw.write(`event: status\ndata: ${JSON.stringify({ t: 'DaShengOS Agent 引擎启动...' })}\n\n`)
 
-      const { runAgentLoop } = await import('../core/agent/loop.js')
+      const { runOrchestrator } = await import('../core/orchestrator/index.js')
       const rawHistory = history.slice(-50).map(h => ({ role: h.role, content: h.content }))
 
-      const result = await runAgentLoop(message, rawHistory, {
+      const result = await runOrchestrator(message, rawHistory, {
+        approvalMode: approvalMode || 'ask',
         userId,
         sessionId,
         workspaceDir: '/Users/apple/Desktop/ai-workbench-v2',
-        elevatedMode: true,
-        maxIterations: 25,
-        systemPrompt: harnessPrompt,
-        onToken: (token) => {
-          if (!controller.signal.aborted && !reply.raw.writableEnded) {
-            reply.raw.write(`event: token\ndata: ${JSON.stringify({ c: token })}\n\n`)
-          }
-        },
-        onEvent: (event) => {
+        model,
+      },
+        (event) => {
           if (controller.signal.aborted || reply.raw.writableEnded) return
           switch (event.type) {
             case 'status':
               reply.raw.write(`event: status\ndata: ${JSON.stringify({ t: event.text })}\n\n`); break
             case 'tool_start':
-              reply.raw.write(`event: tool_start\ndata: ${JSON.stringify({ n: event.name, a: event.args })}\n\n`); break
+              reply.raw.write(`event: tool_start\ndata: ${JSON.stringify({ n: (event as any).name, a: (event as any).args })}\n\n`); break
             case 'tool_end':
-              reply.raw.write(`event: tool_end\ndata: ${JSON.stringify({ n: event.name, ok: event.success, s: event.summary })}\n\n`); break
+              reply.raw.write(`event: tool_end\ndata: ${JSON.stringify({ n: (event as any).name, ok: (event as any).success, s: (event as any).summary })}\n\n`); break
             case 'error':
-              reply.raw.write(`event: error\ndata: ${JSON.stringify({ e: event.message })}\n\n`); break
+              reply.raw.write(`event: error\ndata: ${JSON.stringify({ e: (event as any).message || event.text })}\n\n`); break
             case 'thinking':
               reply.raw.write(`event: thinking\ndata: ${JSON.stringify({ t: event.text })}\n\n`); break
             case 'searching':
-              reply.raw.write(`event: searching\ndata: ${JSON.stringify({ q: event.query })}\n\n`); break
+              reply.raw.write(`event: searching\ndata: ${JSON.stringify({ q: (event as any).query || event.text })}\n\n`); break
           }
         },
-      })
+        (token) => {
+          if (!controller.signal.aborted && !reply.raw.writableEnded) {
+            reply.raw.write(`event: token\ndata: ${JSON.stringify({ c: token })}\n\n`)
+          }
+        },
+      )
 
       // 跨对话记忆持久化
-      if (result.success && result.response) {
-        const toolNames = result.steps
-          .filter(s => s.type === 'tool_call')
-          .flatMap(s => s.toolCalls?.map(tc => tc.name) || [])
+      if (result.success) {
+        const toolNames: string[] = []
         try {
           extractAndSaveCrossSessionMemory({
             userId, sessionId,
@@ -450,7 +452,7 @@ export async function chatRoutes(app: FastifyInstance) {
       }
 
       if (!reply.raw.writableEnded) {
-        reply.raw.write(`event: usage\ndata: ${JSON.stringify(result.totalTokens)}\n\n`)
+        reply.raw.write(`event: usage\ndata: ${JSON.stringify({ prompt: 0, completion: 0 })}\n\n`)
         reply.raw.write(`event: done\ndata: ${JSON.stringify({ finish_reason: 'stop' })}\n\n`)
         reply.raw.end()
       }
@@ -496,6 +498,32 @@ export async function chatRoutes(app: FastifyInstance) {
     try { await jsonRpcCall('health.ping', {}); return reply.send({ status: 'ok' }) }
     catch (e: any) { return reply.code(503).send({ status: 'error', error: e.message }) }
   })
+  // GET /welcome — 返回可配置的欢迎语
+  app.get('/welcome', { preHandler: [app.authenticate] }, async (_req, reply) => {
+    return reply.send({
+      copilot: '欢迎来到 DaShengOS 指挥中心 🧠\n\n告诉我你想做什么，我会自动调度工具和 Agent 来帮你。',
+      content: 'DaShengOS · AI 全域代理工作台已就绪',
+      tips: ['试试说"帮我做一份行业报告"', '上传文件让我帮你分析', '创建定时任务自动化工作'],
+    })
+  })
+
+  // GET /conversations — 返回最近会话列表（轻量版，复用 sessions 表）
+  app.get('/conversations', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const rows = sqlite
+      .prepare('SELECT id, title, updated_at as updated, created_at FROM sessions WHERE user_id = ? AND status = ? ORDER BY updated_at DESC LIMIT 20')
+      .all(req.user!.id, 'ACTIVE')
+    return reply.send({ conversations: rows })
+  })
+
+  // GET /conversations/:id — 返回单个会话详情
+  app.get('/conversations/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const session = sqlite.prepare('SELECT * FROM sessions WHERE id = ? AND user_id = ?').get(id, req.user!.id)
+    if (!session) return reply.code(404).send({ code: 'NOT_FOUND' })
+    const messages = sqlite.prepare('SELECT id, role, content, created_at FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 100').all(id)
+    return reply.send({ ...session as any, messages })
+  })
+
 }
 
 // ── 工具函数 ──

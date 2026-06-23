@@ -13,5 +13,10 @@
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "clean": "pnpm -r exec rm -rf dist .next .turbo node_modules/.cache"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^10.0.0",
+    "seroval": "^1.5.4",
+    "tsx": "^4.19.2"
   }
 }

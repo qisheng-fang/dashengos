@@ -304,6 +304,13 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
       })
 
       if (!response.ok) {
+        // 401/403 → 清除登录态并跳转登录页
+        if (response.status === 401 || response.status === 403) {
+          const { useAuthStore } = await import('@/lib/auth-store')
+          useAuthStore.getState().clear()
+          window.location.href = '/login'
+          throw new Error('登录已过期，正在跳转登录页...')
+        }
         const text = await response.text().catch(() => '')
         throw new Error(`HTTP ${response.status} ${text || response.statusText}`.trim())
       }

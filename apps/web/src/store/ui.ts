@@ -12,6 +12,8 @@ interface UIState {
   rightPanelOpen: boolean
   theme: Theme
   cmdOpen: boolean
+  sessionBarOpen: boolean
+  terminalOpen: boolean
   // Actions
   setSidebarOpen: (open: boolean) => void
   toggleSidebar: () => void
@@ -19,6 +21,10 @@ interface UIState {
   toggleRightPanel: () => void
   setTheme: (theme: Theme) => void
   setCmdOpen: (open: boolean) => void
+  activeSessionId: string | null
+  setActiveSessionId: (id: string | null) => void
+  toggleSessionBar: () => void
+  toggleTerminal: () => void
 }
 
 export const useUIStore = create<UIState>()(
@@ -28,12 +34,18 @@ export const useUIStore = create<UIState>()(
       rightPanelOpen: false, // 2026-06-20: 默认隐藏，用户可手动打开
       theme: 'dark', // v0.3 spec §30.1 暗色优先
       cmdOpen: false,
+      activeSessionId: null,
+      sessionBarOpen: true,
+      terminalOpen: false, // 默认折叠，点击展开
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
       toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
       setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
       toggleRightPanel: () => set({ rightPanelOpen: !get().rightPanelOpen }),
       setTheme: (theme) => set({ theme }),
       setCmdOpen: (open) => set({ cmdOpen: open }),
+      setActiveSessionId: (id) => set({ activeSessionId: id }),
+      toggleSessionBar: () => set({ sessionBarOpen: !get().sessionBarOpen }),
+      toggleTerminal: () => set({ terminalOpen: !get().terminalOpen }),
     }),
     {
       name: 'dasheng-ui',

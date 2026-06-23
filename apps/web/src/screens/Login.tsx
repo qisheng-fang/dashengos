@@ -45,7 +45,7 @@ export function Login() {
         refresh: res.refresh_token,
         expiresAt: Date.now() + res.expires_in * 1000,
       })
-      void navigate({ to: search.redirect || '/' })
+      void navigate({ to: search.redirect || '/chats/default' })
     } catch (e) {
       if (e instanceof ApiError) {
         if (e.status === 401) setError('用户名或密码错误')

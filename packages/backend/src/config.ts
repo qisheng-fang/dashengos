@@ -27,6 +27,7 @@ const ConfigSchema = z.object({
   // LLM (mock in Phase 1; real in Phase 2)
   OLLAMA_HOST: z.string().default('http://127.0.0.1:11434'),
   DEFAULT_MODEL: z.string().default('ollama:qwen2.5:7b'),
+  LLM_PROVIDER: z.string().default('deepseek'),
 
   // Track D.1 (2026-06-15) · SiliconFlow provider (老板用 key 接 Qwen2.5-72B)
   //   OpenAI 兼容 API (/v1/chat/completions)

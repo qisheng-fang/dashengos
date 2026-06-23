@@ -1,18 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { TanStackRouterVite } from '@tanstack/router-vite-plugin'
 import path from 'node:path'
 
-// v0.3 spec §34: Vite 6 + TanStack Router + React 19
-// ⚠️ TanStackRouterVite 仍 peer 到 vite@5, 但实际跑 vite@6 正常 (pnpm 已知 issue)
-const routerPlugin = TanStackRouterVite({
-  routesDirectory: './src/routes',
-  generatedRouteTree: './src/routeTree.gen.ts',
-  routeFileIgnorePattern: '.*\\.(documents|diagnostics|visualizations|settings\\.(automations|learnings|memory|social-cookies|admin))\\.tsx$',
-}) as unknown as import('vite').Plugin
-
 export default defineConfig({
-  plugins: [routerPlugin, react()],
+  plugins: [react()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

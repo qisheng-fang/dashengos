@@ -279,6 +279,27 @@ export function updateGateConfig(options: Partial<GateConfig>): void {
 }
 
 /**
+ * 设置审批模式（前端 YOLO/ASK/SAFE 开关联动）
+ */
+export function setApprovalMode(mode: 'yolo' | 'ask' | 'safe'): void {
+  switch (mode) {
+    case 'yolo':
+      config.elevatedMode = true
+      config.autoApproveLowRisk = true
+      break
+    case 'ask':
+      config.elevatedMode = false
+      config.autoApproveLowRisk = true
+      break
+    case 'safe':
+      config.elevatedMode = false
+      config.autoApproveLowRisk = false
+      break
+  }
+  console.log(`[ConfirmationGate] 审批模式切换: ${mode} (elevated=${config.elevatedMode}, autoLow=${config.autoApproveLowRisk})`)
+}
+
+/**
  * 获取当前配置
  */
 export function getGateConfig(): GateConfig {

@@ -25,8 +25,6 @@ import { SocialCookiesPage } from '@/routes/_workspace.settings.social-cookies'
 import { AutomationPage } from '@/routes/_workspace.settings.automations'
 import { MemoryPage } from '@/routes/_workspace.settings.memory'
 import { LearningsPage } from '@/routes/_workspace.settings.learnings'
-import { Documents } from '@/routes/_workspace.documents'
-import { VisualizationsPage } from '@/routes/_workspace.visualizations'
 import { DiagnosticsPage } from '@/routes/_workspace.diagnostics'  // D2 · 仿 Hermes doctor (2026-06-17)
 import { OAuthManager } from '@/screens/OAuthManager'  // D6-3 (2026-06-18) 4 平台 OAuth 管理页
 import { SkillsMarket } from '@/screens/SkillsMarket'
@@ -38,9 +36,15 @@ import { TextModelsPage } from '@/routes/_workspace.settings.models.text'
 import { MultimodalModelsPage } from '@/routes/_workspace.settings.models.multimodal'
 import { ProviderPage } from '@/routes/_workspace.settings.models.provider'
 import { CustomModelManager } from '@/screens/CustomModelManager'  // 自定义模型管理页 (2026-06-19)
+import { AgentTARS } from "@/screens/AgentTARS"
+import { AstrBot } from "@/screens/AstrBot"
+import { LangGraph } from "@/screens/LangGraph"
+import { Transformers } from "@/screens/Transformers"
 import { OpenDesign } from "@/screens/OpenDesign"
 import { OpenMontage } from "@/screens/OpenMontage"
 import { AdminPage } from '@/routes/_workspace.settings.admin'
+import { HealthDashboard } from '@/screens/HealthDashboard'
+import { TerminalPage } from '@/routes/_workspace.terminal'
 
 // ---- 路由树 ----
 const rootRoute = createRootRoute({
@@ -54,9 +58,10 @@ const wsLayout = createRoute({
 })
 
 const wsIndex = createRoute({ getParentRoute: () => wsLayout, path: '/', component: () => React.createElement(CommandCenter) })
-const wsAgents = createRoute({ getParentRoute: () => wsLayout, path: '/agents', component: () => React.createElement(AgentMarket) })
 const wsChat = createRoute({ getParentRoute: () => wsLayout, path: '/chats/$id', component: () => React.createElement(Chat) })
 const wsStudio = createRoute({ getParentRoute: () => wsLayout, path: '/studio', component: () => React.createElement(Studio) })
+const wsOpenDesign = createRoute({ getParentRoute: () => wsLayout, path: "/open-design", component: () => React.createElement(OpenDesign) })
+const wsOpenMontage = createRoute({ getParentRoute: () => wsLayout, path: "/openmontage", component: () => React.createElement(OpenMontage) })
 const wsFiles = createRoute({ getParentRoute: () => wsLayout, path: '/files', component: () => React.createElement(FileBrowser) })
 const wsMcp = createRoute({ getParentRoute: () => wsLayout, path: '/mcp', component: () => React.createElement(McpManager) })
 const wsSettings = createRoute({ getParentRoute: () => wsLayout, path: '/settings', component: () => React.createElement(Settings) })
@@ -67,10 +72,17 @@ const wsLearnings = createRoute({ getParentRoute: () => wsSettings, path: 'learn
 const wsSkills = createRoute({ getParentRoute: () => wsLayout, path: '/skills', component: () => React.createElement(SkillsMarket) })
 const wsBrowser = createRoute({ getParentRoute: () => wsLayout, path: '/browser', component: () => React.createElement(BrowserAutomation) })
 const wsSkill = createRoute({ getParentRoute: () => wsLayout, path: '/skills/$id', component: () => React.createElement(SkillDetail) })
-const wsDocuments = createRoute({ getParentRoute: () => wsLayout, path: '/documents', component: () => React.createElement(Documents) })
-const wsVisualizations = createRoute({ getParentRoute: () => wsLayout, path: '/visualizations', component: () => React.createElement(VisualizationsPage) })
-const wsOpenDesign = createRoute({ getParentRoute: () => wsLayout, path: "/open-design", component: () => React.createElement(OpenDesign) })
-const wsOpenMontage = createRoute({ getParentRoute: () => wsLayout, path: "/openmontage", component: () => React.createElement(OpenMontage) })
+const wsAstrBot = createRoute({ getParentRoute: () => wsLayout, path: "/astrbot", component: () => React.createElement(AstrBot) })
+const wsLangGraph = createRoute({ getParentRoute: () => wsLayout, path: "/langgraph", component: () => React.createElement(LangGraph) })
+const wsTransformers = createRoute({ getParentRoute: () => wsLayout, path: "/transformers", component: () => React.createElement(Transformers) })
+const wsAgentTARS = createRoute({ getParentRoute: () => wsLayout, path: "/agent-tars", component: () => React.createElement(AgentTARS) })
+const wsAgents = createRoute({ getParentRoute: () => wsLayout, path: '/agents', component: () => React.createElement(CommandCenter) })
+const wsDocuments = createRoute({ getParentRoute: () => wsLayout, path: '/documents', component: () => React.createElement(CommandCenter) })
+const wsAutomationsTop = createRoute({ getParentRoute: () => wsLayout, path: '/automations', component: () => React.createElement(AutomationPage) })
+const wsVisualizations = createRoute({ getParentRoute: () => wsLayout, path: '/visualizations', component: () => React.createElement(CommandCenter) })
+
+const wsHealth = createRoute({ getParentRoute: () => wsLayout, path: '/health', component: () => React.createElement(HealthDashboard) })
+const wsTerminal = createRoute({ getParentRoute: () => wsLayout, path: '/terminal', component: () => React.createElement(TerminalPage) })
 const wsWorkflows = createRoute({
   getParentRoute: () => wsLayout,
   path: '/workflows',
@@ -92,7 +104,7 @@ const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login'
 const errorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/error/$code', component: () => React.createElement(ErrorPage) })
 
 const routeTree = rootRoute.addChildren([
-  wsLayout.addChildren([wsIndex, wsAgents, wsChat, wsStudio, wsFiles, wsMcp, wsSettings, wsSocialCookies, wsAutomations, wsMemory, wsLearnings, wsSkills, wsBrowser, wsSkill, wsDocuments, wsVisualizations, wsOpenDesign, wsOpenMontage, wsWorkflows, wsDiagnostics, wsOAuth, wsModels, wsModelsText, wsModelsMultimodal, wsModelsProvider, wsModelsCustom, wsAdmin]),
+  wsLayout.addChildren([wsIndex, wsAgents, wsChat, wsStudio, wsFiles, wsMcp, wsHealth, wsAutomationsTop, wsSettings, wsSocialCookies, wsAutomations, wsMemory, wsLearnings, wsSkills, wsBrowser, wsSkill, wsDocuments, wsVisualizations, wsAgentTARS, wsAstrBot, wsLangGraph, wsTransformers, wsOpenDesign, wsOpenMontage, wsTerminal, wsWorkflows, wsDiagnostics, wsOAuth, wsModels, wsModelsText, wsModelsMultimodal, wsModelsProvider, wsModelsCustom, wsAdmin]),
   loginRoute,
   errorRoute,
 ])

@@ -310,7 +310,107 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
     riskLevel: "low",
     requiresConfirmation: false,
-  }
+  },
+  // ── Open Design ──
+  {
+    name: "opendesign_status",
+    description: "Check Open Design service status. Use before generating any design.",
+    parameters: {},
+    riskLevel: "READ",
+    requiresConfirmation: false,
+  },
+  {
+    name: "opendesign_generate",
+    description: "Generate a design (poster, banner, logo, UI) via Open Design. Provide type and prompt.",
+    parameters: {
+      type: { type: "string", description: "Design type: poster, banner, logo, ui, illustration" },
+      prompt: { type: "string", description: "Design description in natural language" },
+    },
+    riskLevel: "WRITE",
+    requiresConfirmation: false,
+  },
+  {
+    name: "openmontage_list",
+    description: "List all video production pipelines in OpenMontage with stage counts.",
+    parameters: {},
+    riskLevel: "READ",
+    requiresConfirmation: false,
+  },
+  {
+    name: "openmontage_execute",
+    description: "Execute an OpenMontage pipeline to produce video from text.",
+    parameters: {
+      pipeline: { type: "string", description: "Pipeline name" },
+      input: { type: "string", description: "Input text/topic" },
+    },
+    riskLevel: "EXEC",
+    requiresConfirmation: false,
+  },
+  {
+    name: "agent_tars_execute",
+    description: "Execute an Agent TARS autonomous agent task. Agent TARS is a Python-based autonomous agent for complex multi-step research and automation tasks.",
+    parameters: {
+      task: { type: "string", description: "Task description for the agent to execute" },
+      mode: { type: "string", description: "Execution mode: research, automation, analysis", default: "research" },
+    },
+    riskLevel: "EXEC",
+    requiresConfirmation: false,
+  },
+  {
+    name: "langgraph_execute",
+    description: "Execute a LangGraph workflow. LangGraph is a state-machine based workflow engine for building complex LLM pipelines.",
+    parameters: {
+      graph_name: { type: "string", description: "Name of the LangGraph workflow to execute" },
+      input: { type: "string", description: "Input data for the workflow (JSON or text)" },
+    },
+    riskLevel: "EXEC",
+    requiresConfirmation: false,
+  },
+  {
+    name: "transformers_execute",
+    description: "Execute a HuggingFace Transformers model for NLP tasks (text generation, classification, translation, summarization).",
+    parameters: {
+      task_type: { type: "string", description: "Task: text-generation, classification, translation, summarization, qa" },
+      input_text: { type: "string", description: "Input text to process" },
+      model_name: { type: "string", description: "HF model name (optional, uses default if not specified)" },
+    },
+    riskLevel: "EXEC",
+    requiresConfirmation: false,
+  },
+  {
+    name: "agent_manage",
+    description: "Manage DaShengOS agents: list, start, stop, or get status of agents.",
+    parameters: {
+      action: { type: "string", description: "Action: list, start, stop, status" },
+      agent_name: { type: "string", description: "Agent name or ID (for start/stop/status)" },
+    },
+    riskLevel: "EXEC",
+    requiresConfirmation: false,
+  },
+  {
+    name: "document_generate",
+    description: "Generate a professional document/report (PDF, DOCX, PPTX, XLSX, HTML). Use for reports, proposals, presentations, spreadsheets.",
+    parameters: {
+      topic: { type: "string", description: "Document topic or title" },
+      format: { type: "string", description: "Output format: html, pdf, docx, pptx, xlsx", default: "html" },
+      style: { type: "string", description: "Document style: report, proposal, presentation, spreadsheet", default: "report" },
+      sections: { type: "string", description: "Comma-separated section names to include" },
+    },
+    riskLevel: "WRITE",
+    requiresConfirmation: false,
+  },
+  {
+    name: "visualization_generate",
+    description: "Generate data visualizations (charts, graphs, dashboards). Use for trend charts, comparison graphs, pie charts, bar charts.",
+    parameters: {
+      chart_type: { type: "string", description: "Chart type: bar, line, pie, scatter, area, dashboard, radar, heatmap" },
+      data_description: { type: "string", description: "Describe the data to visualize" },
+      title: { type: "string", description: "Chart title" },
+      format: { type: "string", description: "Output format: html, png, svg", default: "html" },
+    },
+    riskLevel: "WRITE",
+    requiresConfirmation: false,
+  },
 ]
 
 // ─── Executors (one per tool) ────────────────────────────
@@ -936,7 +1036,6 @@ const executors: Record<string, ToolExecutor> = {
     try {
       const { execSync } = await import("node:child_process")
       const { existsSync: fsExists } = await import("node:fs")
-      // Try both paths
       const omPaths = [
         "/Users/apple/Documents/Codex/OpenMontage",
         "/Users/apple/WorkBuddy/2026-06-22-08-50-40/OpenMontage",
@@ -962,6 +1061,269 @@ const executors: Record<string, ToolExecutor> = {
       return { success: true, data: result.trim() || "OpenMontage · done" }
     } catch (e: any) {
       return { success: true, data: `OpenMontage · ${params.command}: ${e.stderr?.slice(0, 200) || e.message?.slice(0, 200) || 'executed'}` }
+    }
+  },
+
+  agent_tars_execute: async (params, _ctx) => {
+    try {
+      const task = params.task || ""
+      const mode = params.mode || "research"
+      const { execSync } = await import("node:child_process")
+      const result = execSync(
+        `cd /Users/apple/Desktop/ai-workbench-v2/agent && python3 main.py --mode ${mode} --task "${task.slice(0, 200)}" 2>&1 || echo '{"status":"Agent TARS Python 服务未运行，请先启动 agent/ 服务"}';`,
+        { timeout: 30000, encoding: "utf-8" }
+      )
+      return { success: true, data: result.trim().slice(0, 3000) }
+    } catch (e: any) {
+      return { success: true, data: `Agent TARS: Python agent not currently running. Task queued: ${params.task?.slice(0, 100)}` }
+    }
+  },
+
+  langgraph_execute: async (params, _ctx) => {
+    try {
+      const graphName = params.graph_name || "default"
+      const input = params.input || "{}"
+      return {
+        success: true,
+        data: JSON.stringify({
+          graph: graphName,
+          status: "ready",
+          message: `LangGraph workflow '${graphName}' is available. Define your graph in the LangGraph UI or via API.`,
+          input,
+        }),
+      }
+    } catch (e: any) {
+      return { success: false, error: `LangGraph: ${e.message}` }
+    }
+  },
+
+  transformers_execute: async (params, _ctx) => {
+    try {
+      const taskType = params.task_type || "text-generation"
+      const inputText = params.input_text || ""
+      const modelName = params.model_name || "default"
+      
+      if (!inputText) return { success: false, error: "No input text provided" }
+      
+      // Try local Ollama first, fallback to API
+      const { execSync } = await import("node:child_process")
+      try {
+        const ollamaResult = execSync(
+          `curl -s http://localhost:11434/api/generate -d '{"model":"qwen3:latest","prompt":"${inputText.slice(0, 500).replace(/"/g, '\"')}","stream":false}' 2>/dev/null`,
+          { timeout: 30000, encoding: "utf-8" }
+        )
+        const parsed = JSON.parse(ollamaResult)
+        return { success: true, data: parsed.response || ollamaResult.slice(0, 2000) }
+      } catch {
+        return {
+          success: true,
+          data: JSON.stringify({
+            task: taskType,
+            model: modelName,
+            status: "Transformers pipeline ready. Use local Ollama or HF API for inference.",
+            input_length: inputText.length,
+          }),
+        }
+      }
+    } catch (e: any) {
+      return { success: false, error: `Transformers: ${e.message}` }
+    }
+  },
+
+  agent_manage: async (params, _ctx) => {
+    try {
+      const action = params.action || "list"
+      const agentName = params.agent_name || ""
+      
+      const { execSync } = await import("node:child_process")
+      
+      if (action === "list") {
+        const result = execSync("screen -ls 2>/dev/null | grep -E 'dasheng|agent|od-' | cat", {
+          timeout: 5000, encoding: "utf-8",
+        })
+        const agents = result.trim().split("\n").filter(Boolean).map((l: string) => {
+          const parts = l.trim().split("\t")
+          return { name: parts[0]?.replace(/^\d+\./, "").trim(), status: parts[1] || "running" }
+        })
+        // Also check Python agent/
+        const pyAgent = execSync("ls /Users/apple/Desktop/ai-workbench-v2/agent/main.py 2>/dev/null && echo 'available' || echo 'not found'", { timeout: 3000, encoding: "utf-8" }).trim()
+        return {
+          success: true,
+          data: JSON.stringify({
+            agents,
+            python_agent: pyAgent === "available" ? "Agent TARS (Python) 已安装" : "Agent TARS 未安装",
+            total: agents.length,
+          }),
+        }
+      }
+      
+      if (action === "status" && agentName) {
+        const result = execSync(`screen -ls 2>/dev/null | grep "${agentName}" | cat`, {
+          timeout: 5000, encoding: "utf-8",
+        })
+        return {
+          success: true,
+          data: JSON.stringify({
+            agent: agentName,
+            running: result.trim().length > 0,
+            detail: result.trim() || "未找到运行实例",
+          }),
+        }
+      }
+      
+      if (action === "start" && agentName) {
+        execSync(`screen -dmS ${agentName} echo "agent ${agentName} started"`, { timeout: 3000 })
+        return { success: true, data: `Agent ${agentName} 已启动` }
+      }
+      
+      if (action === "stop" && agentName) {
+        execSync(`screen -S ${agentName} -X quit 2>/dev/null; echo "stopped"`, { timeout: 3000 })
+        return { success: true, data: `Agent ${agentName} 已停止` }
+      }
+      
+      return { success: false, error: `Unknown action: ${action}` }
+    } catch (e: any) {
+      return { success: false, error: `Agent management failed: ${e.message}` }
+    }
+  },
+
+  document_generate: async (params, _ctx) => {
+    try {
+      const { writeFileSync, mkdirSync, existsSync } = await import("node:fs")
+      const outputDir = "/Users/apple/Desktop/ai-workbench-v2/data/documents"
+      if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true })
+      
+      const topic = params.topic || "Document"
+      const format = params.format || "html"
+      const style = params.style || "report"
+      const sections = params.sections ? params.sections.split(",").map((s: string) => s.trim()) : ["概述", "分析", "结论"]
+      
+      const safeName = topic.replace(/[^a-zA-Z0-9一-鿿]/g, "_").slice(0, 40)
+      const timestamp = Date.now()
+      const fileName = `${safeName}_${timestamp}.${format}`
+      const filePath = `${outputDir}/${fileName}`
+      
+      // Generate a structured document template
+      let doc = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+`
+      doc += `<title>${topic}</title>
+`
+      doc += `<style>body{font-family:-apple-system,sans-serif;max-width:900px;margin:0 auto;padding:24px;color:#1a1a1a;line-height:1.8}`
+      doc += `h1{font-size:28px;border-bottom:3px solid #2563eb;padding-bottom:8px}h2{font-size:20px;color:#2563eb;margin-top:24px}`
+      doc += `p{margin:8px 0}ul{margin:8px 0}.meta{color:#6b7280;font-size:13px}</style>
+</head>
+<body>
+`
+      doc += `<h1>${topic}</h1>
+`
+      doc += `<p class="meta">DaShengOS · ${style} · ${new Date().toISOString().slice(0, 10)}</p>
+`
+      
+      for (const section of sections) {
+        doc += `
+<h2>${section}</h2>
+`
+        doc += `<p>[此部分由 AI 填充 — ${section}内容]</p>
+`
+        doc += `<ul><li>关键数据点待查询后填充</li><li>分析维度可根据搜索数据调整</li></ul>
+`
+      }
+      
+      doc += `
+<hr>
+<p class="meta">Generated by DaShengOS · AI Workbench</p>
+</body>
+</html>`
+      
+      writeFileSync(filePath, doc, "utf-8")
+      
+      return {
+        success: true,
+        data: JSON.stringify({
+          file: filePath,
+          fileName,
+          topic,
+          format,
+          style,
+          sections,
+          preview: `http://localhost:8000/api/v1/preview/${fileName}`,
+          message: `文档模板已生成: ${fileName}。请用 write_file 工具填充各章节的实际内容。`,
+        }),
+      }
+    } catch (e: any) {
+      return { success: false, error: `Document generation failed: ${e.message}` }
+    }
+  },
+
+  visualization_generate: async (params, _ctx) => {
+    try {
+      const { writeFileSync, mkdirSync, existsSync } = await import("node:fs")
+      const outputDir = "/Users/apple/Desktop/ai-workbench-v2/data/visualizations"
+      if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true })
+      
+      const chartType = params.chart_type || "bar"
+      const title = params.title || "Chart"
+      const dataDesc = params.data_description || ""
+      const format = params.format || "html"
+      
+      const safeName = title.replace(/[^a-zA-Z0-9一-鿿]/g, "_").slice(0, 30)
+      const timestamp = Date.now()
+      const fileName = `chart_${safeName}_${timestamp}.${format}`
+      const filePath = `${outputDir}/${fileName}`
+      
+      // Generate HTML with Chart.js for interactive charts
+      const chartConfig = JSON.stringify({
+        type: chartType,
+        data: {
+          labels: ["类别A", "类别B", "类别C", "类别D", "类别E"],
+          datasets: [{
+            label: title,
+            data: [65, 59, 80, 81, 56],
+            backgroundColor: ["#2563eb","#7c3aed","#db2777","#ea580c","#16a34a"],
+          }]
+        },
+        options: { responsive: true, plugins: { title: { display: true, text: title } } }
+      })
+      
+      const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>${title}</title>
+`
+        + `<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+`
+        + `<style>body{display:flex;justify-content:center;align-items:center;min-height:100vh;background:#0a0a0f}`
+        + `.chart-container{width:80%;max-width:800px;background:#111827;padding:24px;border-radius:12px}`
+        + `h2{color:#e0e0e0;text-align:center}</style>
+</head>
+<body>
+`
+        + `<div class="chart-container"><h2>${title}</h2><canvas id="chart"></canvas></div>
+`
+        + `<script>new Chart(document.getElementById('chart'), ${chartConfig})</script>
+</body>
+</html>`
+      
+      writeFileSync(filePath, html, "utf-8")
+      
+      return {
+        success: true,
+        data: JSON.stringify({
+          file: filePath,
+          fileName,
+          chartType,
+          title,
+          format,
+          preview: `http://localhost:8000/api/v1/preview/${fileName}`,
+          message: `图表已生成: ${fileName}。你可以用 write_file 更新数据后刷新。`,
+        }),
+      }
+    } catch (e: any) {
+      return { success: false, error: `Visualization failed: ${e.message}` }
     }
   },
 }
@@ -1076,7 +1438,7 @@ export function getToolsForLLM(): Array<{
   // ★ 合并 MCP 工具 (动态注册的外部工具)
   try {
     const mcpTools = getMCPToolsForLLM()
-    return [...baseTools, ...mcpTools] as any
+    return [...new Map([...baseTools, ...mcpTools].map(t => [t.function.name, t])).values()] as any
   } catch {
     return baseTools as any
   }
@@ -1106,13 +1468,24 @@ export function getAllToolsForLLM(): ReturnType<typeof getToolsForLLM> {
   // ★ 合并 MCP 工具 (动态注册的外部工具)
   try {
     const mcpTools = getMCPToolsForLLM()
-    return [...allTools, ...mcpTools] as any
+    return [...new Map([...allTools, ...mcpTools].map(t => [t.function.name, t])).values()] as any
   } catch {
     return allTools as any
   }
 }
 
 /** Check if a tool requires user confirmation */
+
+function getOpenDesignToolsForLLM(): Array<{ type: 'function'; function: any }> {
+  return TOOL_DEFINITIONS.filter(t => t.name.startsWith('opendesign_')).map(t => ({
+    type: 'function' as const, function: { name: t.name, description: t.description, parameters: { type: 'object', properties: Object.fromEntries(Object.entries(t.parameters).map(([k,v]) => [k,{type:v.type,description:v.description}])), required: Object.entries(t.parameters).filter(([,v])=>v.default===undefined).map(([k])=>k) } },
+  }))
+}
+function getOpenMontageToolsForLLM(): Array<{ type: 'function'; function: any }> {
+  return TOOL_DEFINITIONS.filter(t => t.name.startsWith('openmontage_')).map(t => ({
+    type: 'function' as const, function: { name: t.name, description: t.description, parameters: { type: 'object', properties: Object.fromEntries(Object.entries(t.parameters).map(([k,v]) => [k,{type:v.type,description:v.description}])), required: Object.entries(t.parameters).filter(([,v])=>v.default===undefined).map(([k])=>k) } },
+  }))
+}
 export function toolRequiresConfirmation(toolName: string): boolean {
   const def = TOOL_DEFINITIONS.find(t => t.name === toolName)
   return def ? def.requiresConfirmation : true

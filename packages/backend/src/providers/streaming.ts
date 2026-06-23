@@ -103,7 +103,7 @@ export async function* openAIStream(
           if (delta?.reasoning_content) {
             reasoningAcc = (reasoningAcc || '') + delta.reasoning_content;
             if (reasoningAcc.length < 80 || reasoningAcc.length % 200 < 10) {
-              yield { type: 'thinking', content: 'Agent推理中...', meta: { model } }
+              yield { type: 'thinking', content: 'Agent推理中...', meta: { model, reasoning_text: delta.reasoning_content } }
             }
           }
           // Handle content SECOND (this is the visible output)

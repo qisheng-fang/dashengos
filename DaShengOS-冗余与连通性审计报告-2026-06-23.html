@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DaShengOS v6.0 — 全系统冗余与连通性审计报告</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,system-ui,sans-serif;background:#0a0a0f;color:#e0e0e0;padding:24px;line-height:1.6}
+  h1{color:#f0f0f0;border-bottom:2px solid #2563eb;padding-bottom:8px;margin-bottom:16px}
+  h2{color:#60a5fa;margin:24px 0 12px;padding:6px 0;border-bottom:1px solid #1e293b}
+  h3{color:#93c5fd;margin:16px 0 8px}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}
+  th{background:#1e293b;color:#94a3b8;text-align:left;padding:8px 12px;font-weight:500}
+  td{padding:8px 12px;border-bottom:1px solid #1e293b}
+  tr:hover{background:#1a1a2e}
+  .ok{color:#4ade80}
+  .warn{color:#fbbf24}
+  .err{color:#f87171}
+  .info{color:#60a5fa}
+  .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+  .badge-ok{background:#166534;color:#4ade80}
+  .badge-warn{background:#713f12;color:#fbbf24}
+  .badge-err{background:#7f1d1d;color:#f87171}
+  .score{font-size:48px;font-weight:700;text-align:center;padding:24px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .card{background:#111827;border:1px solid #1e293b;border-radius:8px;padding:16px}
+  .card-title{font-weight:600;color:#60a5fa;margin-bottom:8px}
+  hr{border-color:#1e293b;margin:16px 0}
+  code{background:#1e293b;padding:1px 6px;border-radius:3px;font-size:12px;color:#cbd5e1}
+  .meter{height:8px;border-radius:4px;background:#1e293b;margin:4px 0}
+  .meter-fill{height:100%;border-radius:4px}
+  .meter-ok{background:#4ade80}
+  .meter-warn{background:#fbbf24}
+  .meter-err{background:#f87171}
+</style>
+</head>
+<body>
+
+<h1>🔍 DaShengOS v6.0 — 全系统冗余与连通性审计报告</h1>
+<p style="color:#94a3b8">审计时间: 2026-06-23 · 审计范围: 端口/模块/API/连通性/冗余</p>
+
+<!-- 总评 -->
+<div class="score">
+  <span style="color:#4ade80">85</span><span style="color:#94a3b8">/100</span>
+  <div style="font-size:14px;color:#94a3b8">连通性优秀 · 存在15%模块冗余 · 4个死文件/目录</div>
+</div>
+
+<!-- 一、端口映射 -->
+<h2>一、端口映射 (6 个 DaShengOS 端口)</h2>
+<table>
+<tr><th>端口</th><th>服务</th><th>进程</th><th>状态</th><th>连通</th></tr>
+<tr><td><code>:3000</code></td><td>前端 Vite (apps/web)</td><td>node (screen)</td><td><span class="badge badge-ok">运行中</span></td><td class="ok">✅ 200</td></tr>
+<tr><td><code>:3001</code></td><td>Open Design</td><td>node</td><td><span class="badge badge-ok">运行中</span></td><td class="ok">✅</td></tr>
+<tr><td><code>:7456</code></td><td>OpenMontage</td><td>node</td><td><span class="badge badge-ok">运行中</span></td><td class="ok">✅</td></tr>
+<tr><td><code>:8000</code></td><td>后端 Fastify</td><td>node (screen)</td><td><span class="badge badge-ok">运行中</span></td><td class="ok">✅ 401(需auth)</td></tr>
+<tr><td><code>:6379</code></td><td>Redis 缓存</td><td>redis-server</td><td><span class="badge badge-ok">运行中</span></td><td class="ok">✅</td></tr>
+<tr><td><code>:11434</code></td><td>Ollama (本地模型)</td><td>ollama</td><td><span class="badge badge-ok">运行中</span></td><td class="ok">✅</td></tr>
+</table>
+<div style="margin-top:8px;color:#94a3b8;font-size:12px">
+  ⚠ 非 DaShengOS 端口: 3003(Grafana) 5000/7000(ControlCenter) 7892(XiGuaCore) 8002/8529/8900/9101-9201(Python服务) 9229(Codex调试) 12334-12337(Hiddify代理) 14013-14023(微信) 48000+(Codex沙箱)
+</div>
+
+<!-- 二、模块冗余 -->
+<h2>二、模块冗余分析</h2>
+
+<h3>2.1 死文件/空目录 (4个)</h3>
+<table>
+<tr><th>路径</th><th>类型</th><th>大小</th><th>建议</th></tr>
+<tr><td><code>packages/backend/src/core/agent/loop.ts.bak</code></td><td><span class="badge badge-err">备份</span></td><td>15KB</td><td class="warn">删除</td></tr>
+<tr><td><code>packages/backend/src/core/agent/loop.ts.bak.v6-23</code></td><td><span class="badge badge-err">备份</span></td><td>25KB</td><td class="warn">删除</td></tr>
+<tr><td><code>packages/backend/src/core/agent/loop.ts.bak2</code></td><td><span class="badge badge-err">备份</span></td><td>15KB</td><td class="warn">删除</td></tr>
+<tr><td><code>frontend/</code></td><td><span class="badge badge-err">空目录</span></td><td>0 文件</td><td class="warn">删除 (实际用 apps/web/)</td></tr>
+</table>
+
+<h3>2.2 功能重叠模块 (3组)</h3>
+<table>
+<tr><th>模块A</th><th>模块B</th><th>行数</th><th>重叠度</th><th>建议</th></tr>
+<tr>
+  <td><code>self-evolve.ts</code></td>
+  <td><code>self-improve.ts</code></td>
+  <td>463+545=1008</td>
+  <td><span class="badge badge-warn">中</span></td>
+  <td class="warn">合并为一个 self-evolution 模块</td>
+</tr>
+<tr>
+  <td><code>model-router.ts</code></td>
+  <td><code>model-fallback.ts</code></td>
+  <td>134+229=363</td>
+  <td><span class="badge badge-warn">低</span></td>
+  <td>功能互补，保留。router负责选择，fallback负责容错</td>
+</tr>
+<tr>
+  <td><code>audit.ts</code></td>
+  <td><code>tool-tracer.ts</code></td>
+  <td>129+316=445</td>
+  <td><span class="badge badge-warn">低</span></td>
+  <td>功能互补，保留。audit=合规日志，tracer=调试回放</td>
+</tr>
+</table>
+
+<h3>2.3 未引用模块 (3个)</h3>
+<table>
+<tr><th>模块</th><th>行数</th><th>状态</th><th>建议</th></tr>
+<tr><td><code>mcp-sdk-bridge.ts</code></td><td>105</td><td><span class="badge badge-err">死代码</span></td><td class="err">删除或集成到 mcp-client.ts</td></tr>
+<tr><td><code>openmontage-bridge.ts</code></td><td>—</td><td><span class="badge badge-warn">未引用</span></td><td class="warn">接入 loop.ts 工具链</td></tr>
+<tr><td><code>zvec-bridge.ts</code></td><td>98</td><td><span class="badge badge-warn">未引用</span></td><td class="warn">接入 RAG 或删除</td></tr>
+</table>
+
+<!-- 三、API 完整性 -->
+<h2>三、API 路由完整性</h2>
+<table>
+<tr><th>检查项</th><th>结果</th></tr>
+<tr><td>API 文件总数</td><td class="info">38 个</td></tr>
+<tr><td>已注册路由</td><td class="ok">38/38 (100%)</td></tr>
+<tr><td>未注册路由</td><td class="ok">0</td></tr>
+<tr><td>重复路由</td><td class="ok">0 (memory 重定向到 memory-ledger 无冲突)</td></tr>
+</table>
+
+<!-- 四、连通性 -->
+<h2>四、端到端连通性测试</h2>
+<table>
+<tr><th>链路</th><th>端点</th><th>延迟</th><th>结果</th></tr>
+<tr><td>前端 ↔ 后端</td><td>:3000 → :8000</td><td>2ms</td><td class="ok">✅</td></tr>
+<tr><td>后端 ↔ Auth</td><td>:8000 → JWT</td><td>16ms</td><td class="ok">✅</td></tr>
+<tr><td>后端 ↔ MCP</td><td>:8000 → 4 servers</td><td>—</td><td class="ok">✅ 4/4 在线</td></tr>
+<tr><td>后端 ↔ DeepSeek</td><td>:8000 → api.deepseek.com</td><td>166ms</td><td class="ok">✅</td></tr>
+<tr><td>后端 ↔ Redis</td><td>:8000 → :6379</td><td>1ms</td><td class="ok">✅</td></tr>
+<tr><td>后端 ↔ SQLite</td><td>:8000 → data/dasheng.db</td><td>0ms</td><td class="ok">✅</td></tr>
+<tr><td>后端 ↔ 外网</td><td>:8000 → github.com</td><td>超时</td><td class="warn">⚠ 代理环境</td></tr>
+</table>
+
+<!-- 五、内存系统 -->
+<h2>五、三级心跳/遥测覆盖</h2>
+<table>
+<tr><th>系统</th><th>检测方式</th><th>频率</th><th>自修复</th><th>状态</th></tr>
+<tr><td>MCP 心跳</td><td>进程存活 + ping</td><td>30s + 即时</td><td>秒级重启 + 60s熔断</td><td class="ok">✅</td></tr>
+<tr><td>记忆心跳</td><td>SQLite integrity + 表验证 + 衰减</td><td>30s</td><td>自动建表</td><td class="ok">✅</td></tr>
+<tr><td>压缩遥测</td><td>指标采集 + 比率 + 异常计数</td><td>每次压缩</td><td>阈值自调参</td><td class="ok">✅</td></tr>
+</table>
+
+<!-- 六、排查结论 -->
+<h2>六、排查结论与修复清单</h2>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-title">🟢 通过项 (12)</div>
+    <div style="font-size:13px">
+      ✅ 端口无冲突 (3000/3001/7456/8000 独立)<br>
+      ✅ 前后端连通正常<br>
+      ✅ 38个API全注册<br>
+      ✅ 4个MCP全在线<br>
+      ✅ DeepSeek API 可达<br>
+      ✅ Redis/SQLite 正常<br>
+      ✅ 健康评分 100<br>
+      ✅ 记忆心跳正常<br>
+      ✅ 压缩遥测就绪<br>
+      ✅ MCP 韧性已部署<br>
+      ✅ Auth JWT 正常<br>
+      ✅ Ollama 本地模型可达
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">🟡 冗余项 (6)</div>
+    <div style="font-size:13px">
+      ⚠ 3个loop.ts备份文件 (55KB浪费)<br>
+      ⚠ <code>frontend/</code> 空目录<br>
+      ⚠ <code>self-evolve</code> + <code>self-improve</code> 功能重叠<br>
+      ⚠ <code>mcp-sdk-bridge.ts</code> 死代码(未引用)<br>
+      ⚠ <code>openmontage-bridge.ts</code> 未引用<br>
+      ⚠ <code>zvec-bridge.ts</code> 未引用
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">🔴 缺失项 (2)</div>
+    <div style="font-size:13px">
+      ❌ Open Design/OpenMontage 桥接未接入工具链<br>
+      ❌ agent/ (Python) 与 Node 后端无直接通信通道
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">📊 统计</div>
+    <div style="font-size:13px">
+      core 模块: 36个 .ts + 6子目录<br>
+      API 路由: 38个 全注册<br>
+      DaShengOS 端口: 6个<br>
+      外部端口: ~65个 (Codex/系统)<br>
+      备份文件: 3个待清理<br>
+      死代码: 3个模块未引用<br>
+      空目录: 2个 (frontend, vendor, vendors)
+    </div>
+  </div>
+</div>
+
+<h2>七、建议优先修复顺序</h2>
+<table>
+<tr><th>优先级</th><th>操作</th><th>影响</th></tr>
+<tr><td>P0</td><td>删除 3 个 loop.ts.bak* 备份文件</td><td class="ok">清理 55KB</td></tr>
+<tr><td>P0</td><td>删除空目录 frontend/ vendor/ vendors/</td><td class="ok">减歧义</td></tr>
+<tr><td>P1</td><td>mcp-sdk-bridge.ts → 删除或标 @deprecated</td><td class="ok">去死代码</td></tr>
+<tr><td>P1</td><td>openmontage-bridge.ts + zvec-bridge.ts → 接入工具链</td><td class="ok">激活功能</td></tr>
+<tr><td>P2</td><td>self-evolve.ts + self-improve.ts → 合并</td><td class="ok">减28%代码</td></tr>
+<tr><td>P3</td><td>agent/ Python 服务 → 与 Node 后端建立通信桥</td><td class="ok">全域Agent</td></tr>
+</table>
+
+</body>
+</html>
