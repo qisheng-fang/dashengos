@@ -221,7 +221,7 @@ function AutomationsPage() {
       <div>
         <button
           onClick={() => setShowTemplates(!showTemplates)}
-          className="flex items-center gap-1.5 text-xs text-neutral-400 hover:text-neutral-200 mb-2"
+          className="flex items-center gap-1.5 text-sm text-neutral-300 hover:text-neutral-100 mb-2 ml-1"
         >
           📋 模板 ({TEMPLATES.length}) {showTemplates ? '▲' : '▼'}
         </button>
@@ -233,13 +233,13 @@ function AutomationsPage() {
                 <div key={t.id} className="flex items-center gap-4 bg-neutral-900/50 border border-neutral-800 rounded-lg p-3">
                   <span className="text-xl">{t.icon}</span>
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs text-neutral-200 font-medium truncate">{t.name}</div>
-                    <div className="text-[10px] text-neutral-500 truncate">{t.desc} · Cron: {t.cron}</div>
+                    <div className="text-sm text-neutral-200 font-medium truncate">{t.name}</div>
+                    <div className="text-xs text-neutral-400 truncate">{t.desc} · Cron: {t.cron}</div>
                   </div>
                   <button
                     onClick={() => installTemplate(t)}
                     disabled={installed}
-                    className={`shrink-0 text-[10px] px-2 py-1 rounded ${
+                    className={`shrink-0 text-xs px-2.5 py-1.5 rounded ${
                       installed
                         ? 'text-green-400 bg-transparent cursor-default'
                         : 'text-black bg-[#0df0ff] hover:bg-[#0bc8d8]'
@@ -328,7 +328,7 @@ function AutomationsPage() {
         </CardContent>
       </Card>
 
-      <p className="text-xs text-neutral-400 leading-relaxed">
+      <p className="text-sm text-neutral-300 leading-relaxed">
         💡 Cron 示例: 每天 8:00 = <code>0 8 * * *</code>，每小时 = <code>0 * * * *</code>，每周一 9:00 = <code>0 9 * * 1</code>。
         间隔用如 <code>15m</code> / <code>2h</code> / <code>1d</code>。一次性任务过期自动标记完成。
       </p>

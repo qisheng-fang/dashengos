@@ -21,6 +21,7 @@ const NAV_ITEMS = [
   { to: '/skills', label: 'Skills', icon: Puzzle },
   { to: '/studio', label: '工作流', icon: Workflow },
   { to: '/astrbot', label: 'AstrBot', icon: Bot },
+  { to: '/agent-tars', label: 'Agent TARS', icon: Activity },
   { to: '/open-design', label: 'Open Design', icon: Palette },
   { to: '/openmontage', label: 'OpenMontage', icon: Film },
   { to: '/browser', label: '浏览器', icon: Globe },
