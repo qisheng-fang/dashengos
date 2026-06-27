@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { Workspace } from '../screens/Workspace'
+import { Automations } from '../screens/Automations'
 
 export const Route = createFileRoute('/_workspace/automations')({
-  component: Workspace,
+  component: Automations,
 })

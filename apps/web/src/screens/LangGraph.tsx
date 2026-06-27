@@ -1,79 +1,188 @@
-// apps/web/src/screens/LangGraph.tsx
+// apps/web/src/screens/LangGraph.tsx · DaShengOS v8.6
+// 流图编辑器 — 节点 + 连线 + 执行
+
 import { useState, useEffect } from 'react'
-import { Card } from '@/components/ui/card'
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { GitGraph, Loader2, Play, CheckCircle } from 'lucide-react'
-import { useAuthStore } from '@/lib/auth-store'
+import { Badge } from '@/components/ui/badge'
+import { http } from '@/lib/api'
+import { Play, Plus, GitBranch, Activity, Loader2, CheckCircle, XCircle, Circle } from 'lucide-react'
+
+interface GraphNode { id: string; type: string; label: string; x: number; y: number }
+interface GraphEdge { from: string; to: string; condition?: string }
+interface GraphDef { nodes: GraphNode[]; edges: GraphEdge[] }
+interface ExecResult { status: string; steps: Array<{ nodeId: string; output: string; durationMs: number }>; finalOutput?: string }
 
 export function LangGraph() {
-  const [status, setStatus] = useState<any>(null)
-  const [tools, setTools] = useState<any[]>([])
-  const [task, setTask] = useState('')
-  const [result, setResult] = useState('')
-  const [loading, setLoading] = useState(false)
-  const token = useAuthStore(s => s.accessToken)
-  const base = import.meta.env.VITE_API_URL || ''
+  const [graph, setGraph] = useState<GraphDef>({ nodes: [], edges: [] })
+  const [tools, setTools] = useState<string[]>([])
+  const [executing, setExecuting] = useState(false)
+  const [result, setResult] = useState<ExecResult | null>(null)
+  const [showAddNode, setShowAddNode] = useState(false)
+  const [newNode, setNewNode] = useState({ type: 'agent', label: '' })
 
+  // Load available tools
   useEffect(() => {
-    fetch(`${base}/api/v1/langgraph/status`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json()).then(setStatus).catch(() => {})
-    fetch(`${base}/api/v1/langgraph/tools`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json()).then(d => setTools(d.tools || [])).catch(() => {})
+    http.get('/api/v1/langgraph/tools').then(({ data }) => setTools(data?.tools || [])).catch(() => {})
+    http.get('/api/v1/langgraph/status').then(({ data }) => {
+      if (data?.graph) setGraph(data.graph)
+    }).catch(() => {})
   }, [])
 
+  const addNode = () => {
+    if (!newNode.label) return
+    setGraph(prev => ({
+      ...prev,
+      nodes: [...prev.nodes, { id: 'n' + Date.now(), type: newNode.type, label: newNode.label, x: prev.nodes.length * 180 + 50, y: 100 }],
+    }))
+    setNewNode({ type: 'agent', label: '' })
+    setShowAddNode(false)
+  }
+
+  const addEdge = (from: string, to: string) => {
+    if (from === to) return
+    if (graph.edges.some(e => e.from === from && e.to === to)) return
+    setGraph(prev => ({ ...prev, edges: [...prev.edges, { from, to }] }))
+  }
+
+  const removeNode = (id: string) => {
+    setGraph(prev => ({
+      nodes: prev.nodes.filter(n => n.id !== id),
+      edges: prev.edges.filter(e => e.from !== id && e.to !== id),
+    }))
+  }
+
+  const removeEdge = (idx: number) => {
+    setGraph(prev => ({ ...prev, edges: prev.edges.filter((_, i) => i !== idx) }))
+  }
+
   const execute = async () => {
-    setLoading(true)
-    const res = await fetch(`${base}/api/v1/langgraph/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ tool: 'langgraph_agent_loop', args: { task, tools: '["web_search","write_file"]', max_steps: 5 } })
-    })
-    const d = await res.json()
-    setResult(d.success ? d.data : `❌ ${d.error}`)
-    setLoading(false)
+    setExecuting(true); setResult(null)
+    try {
+      const { data } = await http.post('/api/v1/langgraph/orchestrator/execute', { graph, task: 'Execute graph pipeline' })
+      setResult(data)
+    } catch (e: any) { setResult({ status: 'error', steps: [], finalOutput: e.message }) }
+    setExecuting(false)
+  }
+
+  // Build graph via API
+  const buildGraph = async () => {
+    try {
+      await http.post('/api/v1/langgraph/orchestrator/graph', graph)
+    } catch { /* ok */ }
   }
 
   return (
-    <div className="h-full overflow-auto bg-neutral-950 p-6">
-      <div className="max-w-4xl mx-auto space-y-6">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-cyan-500/10 flex items-center justify-center">
-            <GitGraph size={22} className="text-cyan-400" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-neutral-100">LangGraph</h1>
-            <p className="text-xs text-neutral-400">LangChain · 有状态多角色 Agent 图编排</p>
-          </div>
+    <div className="p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">LangGraph 流图编辑器</h1>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={buildGraph} disabled={graph.nodes.length === 0}>
+            <GitBranch className="w-4 h-4 mr-2" />构建图
+          </Button>
+          <Button onClick={execute} disabled={executing || graph.nodes.length === 0}>
+            {executing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+            执行
+          </Button>
         </div>
+      </div>
 
-        <Card className="bg-neutral-900 border-neutral-800 p-5">
-          <div className="flex items-center gap-2">
-            <div className={`w-3 h-3 rounded-full ${status?.installed ? 'bg-green-400' : 'bg-neutral-600'}`} />
-            <span className="text-sm text-neutral-200">{status?.installed ? '已安装' : '未安装'} · {tools.length} 工具</span>
-          </div>
-        </Card>
-
-        <Card className="bg-neutral-900 border-neutral-800 p-5">
-          <h2 className="text-sm font-semibold text-neutral-200 mb-3">Agent 循环测试</h2>
-          <div className="flex gap-2">
-            <Input value={task} onChange={e => setTask(e.target.value)} placeholder="输入任务..." className="flex-1 bg-neutral-950 border-neutral-800" />
-            <Button onClick={execute} disabled={loading}><Play size={14} /></Button>
-          </div>
-          {result && <pre className="mt-3 p-3 rounded bg-neutral-950 text-xs text-neutral-300 font-mono whitespace-pre-wrap">{result}</pre>}
-        </Card>
-
-        <Card className="bg-neutral-900 border-neutral-800 p-5">
-          <h2 className="text-sm font-semibold text-neutral-200 mb-3">工具集</h2>
-          {tools.map((t, i) => (
-            <div key={i} className="flex items-center gap-2 p-2 rounded bg-neutral-950/50 border border-neutral-800">
-              <CheckCircle size={14} className="text-green-400" />
-              <span className="text-xs font-mono text-neutral-200">{t.name}</span>
-              <span className="text-[10px] text-neutral-500">{t.description}</span>
+      <div className="grid grid-cols-3 gap-4">
+        {/* Node list */}
+        <Card className="col-span-2">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              节点 ({graph.nodes.length})
+              <Button size="sm" variant="ghost" onClick={() => setShowAddNode(!showAddNode)}><Plus className="w-4 h-4" /></Button>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {showAddNode && (
+              <div className="flex gap-2 mb-3">
+                <Input placeholder="节点名称" value={newNode.label} onChange={e => setNewNode({...newNode, label: e.target.value})} className="flex-1" />
+                <select value={newNode.type} onChange={e => setNewNode({...newNode, type: e.target.value})} className="border rounded px-2">
+                  <option value="agent">Agent</option><option value="tool">Tool</option><option value="condition">Condition</option><option value="output">Output</option>
+                </select>
+                <Button size="sm" onClick={addNode}>添加</Button>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {graph.nodes.map(node => (
+                <Badge key={node.id} variant="outline" className="cursor-pointer flex items-center gap-1 px-3 py-1.5" onClick={() => removeNode(node.id)}>
+                  <Circle className="w-2 h-2 fill-current" />{node.label}
+                  <XCircle className="w-3 h-3 ml-1 opacity-50 hover:opacity-100" />
+                </Badge>
+              ))}
             </div>
-          ))}
+          </CardContent>
+        </Card>
+
+        {/* Tools */}
+        <Card>
+          <CardHeader><CardTitle>可用工具 ({tools.length})</CardTitle></CardHeader>
+          <CardContent>
+            <div className="space-y-1 max-h-[200px] overflow-y-auto">
+              {tools.map(t => <div key={t} className="text-sm text-muted-foreground">{t}</div>)}
+              {tools.length === 0 && <div className="text-sm text-muted-foreground">加载中...</div>}
+            </div>
+          </CardContent>
         </Card>
       </div>
+
+      {/* Edges */}
+      {graph.edges.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>连线 ({graph.edges.length})</CardTitle></CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-2">
+              {graph.edges.map((edge, i) => {
+                const fromNode = graph.nodes.find(n => n.id === edge.from)
+                const toNode = graph.nodes.find(n => n.id === edge.to)
+                return (
+                  <Badge key={i} variant="secondary" className="cursor-pointer" onClick={() => removeEdge(i)}>
+                    {fromNode?.label || edge.from} → {toNode?.label || edge.to}
+                    <XCircle className="w-3 h-3 ml-1" />
+                  </Badge>
+                )
+              })}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {graph.nodes.map(from => graph.nodes.filter(to => to.id !== from.id).map(to => (
+                <Button key={from.id + to.id} size="sm" variant="ghost" className="text-xs" onClick={() => addEdge(from.id, to.id)}>
+                  {from.label} → {to.label}
+                </Button>
+              )))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Execution Result */}
+      {result && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="w-4 h-4" />
+              执行结果
+              {result.status === 'completed' ? <CheckCircle className="w-4 h-4 text-green-500" /> :
+               result.status === 'error' ? <XCircle className="w-4 h-4 text-red-500" /> : null}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {result.steps?.map((s, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm py-1">
+                <Badge variant="outline">{s.nodeId}</Badge>
+                <span className="text-muted-foreground">{s.output?.slice(0, 100)}</span>
+                <span className="text-xs text-muted-foreground ml-auto">{s.durationMs}ms</span>
+              </div>
+            ))}
+            {result.finalOutput && (
+              <div className="mt-3 p-3 bg-muted rounded text-sm">{result.finalOutput.slice(0, 500)}</div>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
