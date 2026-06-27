@@ -29,6 +29,8 @@ export interface ReflectionLog {
   learned?: string // 反思中学到的东西
 }
 
+import { validateStringOutput } from '../structured-output.js'
+
 // ─── 幻觉检测模式 ──────────────────────────────────────────
 
 const HALLUCINATION_PATTERNS = [
@@ -125,6 +127,27 @@ export function verifyResult(
       confidence -= 0.4
     }
   }
+
+  // 5.5 结构化输出 Schema 校验 (DaShengOS v8.0)
+  // 对已知 schema 的工具输出进行格式校验
+  try {
+    // 尝试从 output 中提取 tool name (如果 output 包含 tool_call 元数据)
+    const schemaNames = ['web_search', 'read_file', 'list_files', 'exec_command']
+    for (const tn of schemaNames) {
+      if (output.includes('"' + tn + '"') || output.includes('"' + tn + ':')) {
+        const v = validateStringOutput(tn, output)
+        if (!v.valid && v.errors) {
+          issues.push({
+            type: 'format_violation',
+            severity: 'warning',
+            description: 'Schema validation failed for ' + tn + ': ' + v.errors.map(e => e.path + ': ' + e.message).join('; '),
+          })
+          confidence -= 0.25
+        }
+        break
+      }
+    }
+  } catch { /* schema validation optional */ }
 
   // 6. 通用泛泛而谈检测
   const genericPhrases = ['这是一个很好的问题', '让我来帮你', '总的来说', '总之', '总而言之']

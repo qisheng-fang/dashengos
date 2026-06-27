@@ -56,6 +56,7 @@ import { sessionRoutes } from './api/sessions.js'
 import { agentRoutes } from './api/agents.js'
 import { skillRoutes } from './api/skills.js'
 import { mcpRoutes } from './api/mcp.js'
+import { mcpServerHostRoutes } from './core/mcp-server-host.js'
 import { memoryLedgerRoutes } from './api/memory-ledger.js'
 import { memorySystemRoutes } from './api/memory-system.js'
 import { toolTracerRoutes } from './api/tool-tracer.js'
@@ -347,6 +348,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(agentRoutes, { prefix: '/api/v1/agents' })
   await app.register(skillRoutes, { prefix: '/api/v1/skills' })
   await app.register(mcpRoutes, { prefix: '/api/v1/mcp' })
+  await app.register(mcpServerHostRoutes)  // MCP Server Host (JSON-RPC on /mcp/*)
   await app.register(memorySystemRoutes, { prefix: '/api/v1/memory' })
   await app.register(memoryLedgerRoutes, { prefix: '/api/v1/memory-ledger' })
   const { memoryHeartbeatRoutes } = await import('./api/memory-heartbeat.js')

@@ -11,6 +11,7 @@ import { connect as netConnect } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import { searchAndFormat } from '../core/web-search.js'
+import { getMultimodalCapability } from '../core/multimodal-bridge.js'
 import { extractAndSaveCrossSessionMemory } from '../core/harness/index.js'
 import { processAgentOutput, createGatewayContext } from '../core/output-gateway/index.js'
 import { getToolsForLLM, executeTool } from '../core/tools/registry.js'
@@ -520,6 +521,50 @@ ${message}`
     return reply.send({ ...session as any, messages })
   })
 
+
+  // ★ v8.0: Multimodal chat with image upload (JSON + base64)
+  app.post('/with-images', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const body = req.body as { message?: string; images?: Array<{data: string; mimeType: string}>; history?: any[]; threadId?: string }
+    const message = body.message || ''
+    const images = body.images || []
+    const history = body.history || []
+    const clientThreadId = body.threadId
+    const threadId = clientThreadId || 'th_' + Date.now().toString(36)
+    if (!message && images.length === 0) {
+      return reply.code(400).send({ code: 'EMPTY_REQUEST', details: 'No message or images' })
+    }
+    const llmMessages: Array<any> = []
+    llmMessages.push({ role: 'system', content: 'You are DaShengOS, an AI assistant with vision capabilities.' })
+    for (const h of history.slice(-20)) { llmMessages.push({ role: h.role, content: h.content }) }
+    const userContent: Array<{type: string; text?: string; image_url?: {url: string; detail?: string}}> = []
+    if (message) userContent.push({ type: 'text', text: message })
+    for (const img of images) {
+      const mime = img.mimeType || 'image/png'
+      userContent.push({ type: 'image_url', image_url: { url: 'data:' + mime + ';base64,' + img.data, detail: 'auto' } })
+    }
+    llmMessages.push({ role: 'user', content: userContent })
+    const apiKey = process.env.OPENAI_API_KEY
+    if (!apiKey) return reply.code(500).send({ code: 'NO_API_KEY' })
+    try {
+      const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-4o', messages: llmMessages, max_tokens: 2048, temperature: 0.7 }),
+        signal: AbortSignal.timeout(120_000),
+      })
+      if (!resp.ok) { const e = await resp.text(); return reply.code(502).send({ code: 'LLM_ERROR', details: e.slice(0, 500) }) }
+      const d = await resp.json() as any
+      const answer = d.choices?.[0]?.message?.content || ''
+      recordMetric('chat_requests_total', 1, 'counter', { mode: 'multimodal' })
+      return reply.send({ threadId, status: 'completed', report: answer, sources: ['vision_llm'] })
+    } catch (e: any) { return reply.code(500).send({ code: 'LLM_CALL_FAILED', details: e.message }) }
+  })
+
+  // ★ v8.0: Vision capability check
+  app.get('/vision-capability', { preHandler: [app.authenticate] }, async (_req) => {
+    const cap = getMultimodalCapability('openai')
+    return { vision: cap.vision, audio: cap.audio, video: cap.video, maxImageSize: cap.maxImageSize, supportedFormats: cap.supportedFormats.images }
+  })
 }
 
 // ── 工具函数 ──

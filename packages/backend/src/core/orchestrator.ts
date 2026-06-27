@@ -6,6 +6,7 @@
 import { connect } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { config } from '../config.js'
+import { rankByQuality, majorityVote, hybridRank, buildSynthesisPrompt, type SwarmCandidate } from './orchestrator/swarm-ranker.js'
 import { logger } from './logger.js'
 
 // ---- 类型定义 ----
@@ -13,7 +14,7 @@ import { logger } from './logger.js'
 export interface OrchestrationStep {
   id: string
   agent_id: string
-  mode: 'pipeline' | 'parallel' | 'conditional' | 'loop' | 'debate'
+  mode: 'pipeline' | 'parallel' | 'conditional' | 'loop' | 'debate' | 'swarm'
   condition?: string
   max_iterations?: number
   children?: OrchestrationStep[]
@@ -532,6 +533,71 @@ async function executeStep(
           status: 'completed',
           output: synOut.output,
           tokens_used: totalTokens,
+          duration_ms: Date.now() - t0,
+        }
+      }
+
+      case 'swarm': {
+        // Fan-out to N agents → rank results → return best + synthesis
+        const children = step.children || []
+        if (children.length === 0) {
+          const out = await callAgent(step.agent_id, input)
+          onProgress?.(step.id, 'completed')
+          return { step_id: step.id, agent_id: step.agent_id, status: 'completed', output: out.output, tokens_used: out.tokens_used, duration_ms: out.duration_ms }
+        }
+
+        // Parallel fan-out
+        onProgress?.(step.id, 'running')
+        const swarmPromises = children.map(async (child) => {
+          onProgress?.(step.id + ':agent:' + child.agent_id, 'running')
+          const tStart = Date.now()
+          try {
+            const childResult = await callAgent(child.agent_id, input)
+            const candidate: SwarmCandidate = {
+              agentId: child.agent_id,
+              output: childResult.output,
+              tokensUsed: childResult.tokens_used,
+              durationMs: childResult.duration_ms,
+            }
+            onProgress?.(step.id + ':agent:' + child.agent_id, 'completed')
+            return candidate
+          } catch (e: any) {
+            onProgress?.(step.id + ':agent:' + child.agent_id, 'failed')
+            return {
+              agentId: child.agent_id,
+              output: 'ERROR: ' + (e.message || 'Unknown'),
+              tokensUsed: 0,
+              durationMs: Date.now() - tStart,
+              confidence: 0,
+            } as SwarmCandidate
+          }
+        })
+
+        const candidates = await Promise.all(swarmPromises)
+        const validCandidates = candidates.filter(c => !c.output.startsWith('ERROR:'))
+
+        if (validCandidates.length === 0) {
+          onProgress?.(step.id, 'failed')
+          return { step_id: step.id, agent_id: step.agent_id, status: 'failed', error: 'All swarm agents failed', duration_ms: Date.now() - t0 }
+        }
+
+        // Rank and select winner
+        const ranking = hybridRank(validCandidates)
+        const totalTokens = validCandidates.reduce((sum, c) => sum + c.tokensUsed, 0)
+
+        // Build synthesis of all outputs
+        onProgress?.(step.id + ':synthesis', 'running')
+        const synthesisPrompt = buildSynthesisPrompt(validCandidates, input)
+        const synthesizer = await callAgent('writer', synthesisPrompt)
+        const finalOutput = '=== Swarm Winner (' + ranking.winner.agentId + ', consensus: ' + (ranking.consensus * 100).toFixed(0) + '%) ===\n\n' + 'WINNER OUTPUT:\n' + ranking.winner.output + '\n\n=== SYNTHESIS ===\n\n' + synthesizer.output + '\n\n=== ALL RESULTS (' + validCandidates.length + ' agents) ===\n\n' + validCandidates.map((c, i) => '[' + (i + 1) + '] ' + c.agentId + ' (tokens: ' + c.tokensUsed + '):\n' + c.output.slice(0, 500) + (c.output.length > 500 ? '...' : '')).join('\n\n')
+
+        onProgress?.(step.id, 'completed')
+        return {
+          step_id: step.id,
+          agent_id: step.agent_id,
+          status: 'completed',
+          output: finalOutput,
+          tokens_used: totalTokens + synthesizer.tokens_used,
           duration_ms: Date.now() - t0,
         }
       }
