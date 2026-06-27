@@ -673,6 +673,35 @@ async function main() {
     const { startMemoryHeartbeat } = await import('./core/memory-heartbeat.js')
     startMemoryHeartbeat()
 
+    // v8.2: Memory Graph + Consolidation
+    const { initMemoryGraphTables } = await import('./core/memory-graph.js')
+    initMemoryGraphTables()
+    const { initConsolidationTables, dailyConsolidation, logConsolidation } = await import('./core/memory-consolidator.js')
+    initConsolidationTables()
+    // Run daily consolidation at startup, then every 6 hours
+    dailyConsolidation('admin').then(r => {
+      logConsolidation('admin', r)
+      app.log.info(r.stats, 'Daily memory consolidation complete')
+    }).catch(e => app.log.warn({ err: (e as Error).message }, 'Daily consolidation failed'))
+    setInterval(async () => {
+      try {
+        const r = await dailyConsolidation('admin')
+        logConsolidation('admin', r)
+        app.log.info(r.stats, 'Periodic memory consolidation')
+      } catch (e) { /* non-critical */ }
+    }, 6 * 3600 * 1000)  // every 6 hours
+    // Weekly consolidation on Sunday
+    const now = new Date()
+    const msToSunday = (7 - now.getDay()) * 86400000 - now.getHours() * 3600000 - now.getMinutes() * 60000
+    setTimeout(async () => {
+      try {
+        const { weeklyConsolidation } = await import('./core/memory-consolidator.js')
+        const r = await weeklyConsolidation('admin')
+        logConsolidation('admin', r)
+        app.log.info(r.stats, 'Weekly memory consolidation')
+      } catch (e) { /* non-critical */ }
+    }, Math.max(3600000, msToSunday))
+
     // Track C.6: 自进化引擎初始化 (策略模式+错误修复+自动技能)
     const { initEvolutionDB } = await import('./core/self-evolve.js')
     initEvolutionDB()
