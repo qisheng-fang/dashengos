@@ -23,6 +23,7 @@ function stripGreeting(text: string): string {
 }
 import { routeModel } from '../model-router.js'
 import { recordEvolution, recommendStrategy, getErrorFix } from '../self-evolve.js'
+import { selfCritique, type CritiqueResult } from '../self-critique.js'
 import { compressContext, quickCompress } from '../context-compressor.js'
 import { recordToolTrace, saveCheckpoint, consumeTokens, setTokenBudget } from '../tool-tracer.js'
 import { trace, exportTrace } from '../otel-tracer.js'
@@ -67,6 +68,7 @@ export type LoopEvent =
 
 export interface AgentLoopResult {
   success: boolean
+  critique?: { severity: string; issues: number; improvementRatio: number }
   response: string
   steps: AgentLoopStep[]
   totalTokens: { prompt: number; completion: number }
@@ -629,6 +631,33 @@ export async function runAgentLoop(
             sessionDurationMs: Date.now() - startTime,
           })
         } catch { /* evolution non-critical */ }
+
+        // ── SELF-CRITIQUE v8.1: Hermes-style self-review ──
+        let critiqueResult: CritiqueResult | undefined
+        const shouldCritique = !elevatedMode && final.length > 80 && fullContent.length > 200
+        if (shouldCritique) {
+          try {
+            onEvent?.({ type: 'status', text: '🔍 自我审查中...' })
+            critiqueResult = await selfCritique(final, effectiveMessage, {
+              enabled: true,
+              maxRetries: 1,
+              minContentLength: 80,
+              timeoutMs: 25000,
+            })
+            if (critiqueResult.severity !== 'none' && critiqueResult.revised !== final) {
+              onEvent?.({ type: 'status', text: '🔧 已修正 ' + critiqueResult.issues.length + ' 个问题' })
+              reflectionLog.push(createReflectionLog(steps.length, 'self-critique', final.slice(0, 200), {
+                passed: critiqueResult.severity !== 'critical',
+                issues: critiqueResult.issues.map(i => ({ type: 'format_violation' as const, severity: 'warning' as const, description: i.type + ': ' + i.description })),
+                retryRecommended: false,
+                confidence: 1 - critiqueResult.issues.length * 0.1,
+              }, 0))
+              return { success: true, response: critiqueResult.revised, steps, totalTokens: { prompt: 0, completion: critiqueResult.revised.length }, diagnosticsResult, systemPrompt: systemPromptText, reflectionLog, critique: { severity: critiqueResult.severity, issues: critiqueResult.issues.length, improvementRatio: critiqueResult.improvementRatio } }
+            }
+          } catch (e: any) {
+            console.warn('[SelfCritique] Critique failed, using original:', e.message)
+          }
+        }
 
         return { success: true, response: final, steps, totalTokens: { prompt: 0, completion: fullContent.length }, diagnosticsResult, systemPrompt: systemPromptText, reflectionLog }
       }
