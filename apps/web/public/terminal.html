@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DaShengOS Terminal</title>
+<link rel="stylesheet" href="/node_modules/xterm/css/xterm.css" />
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;background:#0a0a0f}
+#terminal{height:100%;padding:4px}
+.xterm{height:100%}
+.xterm-viewport::-webkit-scrollbar{width:6px}
+.xterm-viewport::-webkit-scrollbar-thumb{background:#2a2a4a;border-radius:3px}
+#status-bar{position:fixed;top:0;right:0;padding:2px 6px;font-size:10px;font-family:monospace;z-index:999;background:#0a0a0f;border-left:1px solid #1e1e2e;border-bottom:1px solid #1e1e2e;border-radius:0 0 0 6px}
+.status-online{color:#00ff88}
+.status-offline{color:#ff6b6b}
+.status-connecting{color:#ffd93d}
+</style>
+</head>
+<body>
+<div id="status-bar" class="status-connecting">⚡ 连接中...</div>
+<div id="terminal"></div>
+<script type="module">
+const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
+  import('/node_modules/xterm/lib/xterm.js'),
+  import('/node_modules/@xterm/addon-fit/lib/addon-fit.js'),
+  import('/node_modules/@xterm/addon-web-links/lib/addon-web-links.js'),
+]);
+
+const term = new Terminal({
+  cursorBlink: true,
+  cursorStyle: 'bar',
+  fontSize: 13,
+  fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+  theme: {
+    background: '#0a0a0f',
+    foreground: '#e0e0e0',
+    cursor: '#22d3ee',
+    selectionBackground: '#1e3a5f',
+    black: '#1a1a2e', red: '#ff6b6b', green: '#00ff88', yellow: '#ffd93d',
+    blue: '#6c9fff', magenta: '#c084fc', cyan: '#22d3ee', white: '#e0e0e0',
+    brightBlack: '#3a3a5e', brightRed: '#ff8e8e', brightGreen: '#5fffaf',
+    brightYellow: '#ffe66d', brightBlue: '#8cb4ff', brightMagenta: '#d4a0ff',
+    brightCyan: '#67e8f9', brightWhite: '#ffffff',
+  },
+  allowProposedApi: true,
+  scrollback: 5000,
+  windowsMode: false,
+});
+
+const fitAddon = new FitAddon();
+term.loadAddon(fitAddon);
+term.loadAddon(new WebLinksAddon());
+
+const el = document.getElementById('terminal');
+const statusBar = document.getElementById('status-bar');
+term.open(el);
+fitAddon.fit();
+
+let ws = null;
+let retries = 0;
+const MAX = 20;
+let focusInterval = null;
+
+function updateStatus(status, text) {
+  statusBar.className = 'status-' + status;
+  statusBar.textContent = text;
+}
+
+function getToken() {
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const tokenParam = urlParams.get('token');
+    if (tokenParam) return tokenParam;
+    
+    let raw = null;
+    try { raw = localStorage.getItem('dasheng-auth'); } catch(e) {}
+    if (!raw) {
+      try { raw = parent.localStorage.getItem('dasheng-auth'); } catch(e) {}
+    }
+    if (raw) return JSON.parse(raw)?.state?.accessToken || '';
+  } catch(e) {}
+  return '';
+}
+
+function connect() {
+  if (retries >= MAX) {
+    term.writeln('\r\n\x1b[91m[终端无法连接 :8001 — 请检查后端服务]\x1b[0m');
+    term.writeln('\x1b[93m[提示: screen -r dasheng-backend 检查后端]\x1b[0m');
+    updateStatus('offline', '❌ 离线');
+    return;
+  }
+
+  updateStatus('connecting', '⚡ 连接中... (' + (retries+1) + '/' + MAX + ')');
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = location.hostname;
+  const token = getToken();
+  const url = `${proto}//${host}:8001?token=${encodeURIComponent(token)}`;
+
+  try {
+    ws = new WebSocket(url);
+  } catch(e) {
+    retries++;
+    setTimeout(connect, 2000);
+    return;
+  }
+
+  ws.onopen = () => {
+    retries = 0;
+    updateStatus('online', '🟢 在线');
+    term.reset();
+    term.writeln('\x1b[36m╔══════════════════════════════════════╗\x1b[0m');
+    term.writeln('\x1b[36m║   DaShengOS Terminal v6.1          ║\x1b[0m');
+    term.writeln('\x1b[36m║   bash PTY · WebSocket · xterm.js  ║\x1b[0m');
+    term.writeln('\x1b[36m╚══════════════════════════════════════╝\x1b[0m');
+    term.focus();
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'data') {
+        term.write(msg.data);
+      } else if (msg.type === 'session') {
+        // Connected, session created
+      } else if (msg.type === 'exit') {
+        term.writeln(`\r\n\x1b[93m[进程退出 code=${msg.exitCode}]\x1b[0m`);
+        updateStatus('offline', '❌ 已退出');
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    ws = null;
+    retries++;
+    term.writeln('\r\n\x1b[91m[断开]\x1b[0m');
+    updateStatus('connecting', '⚡ 重连中...');
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => {
+    ws = null;
+  };
+}
+
+term.onData((data) => {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'input', data }));
+  }
+});
+
+const onResize = () => {
+  fitAddon.fit();
+  if (ws?.readyState === WebSocket.OPEN && term.cols > 0) {
+    ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+  }
+};
+window.addEventListener('resize', onResize);
+term.onResize(() => onResize());
+
+// Aggressive focus management for the embedded textarea
+function focusTerminal() {
+  const textarea = document.querySelector('.xterm-helper-textarea');
+  if (textarea) {
+    textarea.focus();
+    textarea.click();
+  }
+}
+
+function startAutoFocus() {
+  if (focusInterval) clearInterval(focusInterval);
+  focusInterval = setInterval(() => {
+    const textarea = document.querySelector('.xterm-helper-textarea');
+    if (textarea && document.activeElement !== textarea) {
+      textarea.focus();
+    }
+  }, 800);
+}
+
+// Initial focus after render
+term.onRender(() => {
+  setTimeout(focusTerminal, 50);
+});
+
+// Start auto-focus
+startAutoFocus();
+
+// Re-focus on visibility change
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    focusTerminal();
+    if (!focusInterval) startAutoFocus();
+  } else {
+    if (focusInterval) { clearInterval(focusInterval); focusInterval = null; }
+  }
+});
+
+// Click anywhere in terminal area
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#terminal') || e.target.closest('.xterm')) {
+    setTimeout(focusTerminal, 10);
+  }
+});
+
+// Prevent losing focus to parent window
+window.addEventListener('blur', () => {
+  setTimeout(focusTerminal, 150);
+});
+
+// Start connection
+connect();
+
+// Allow parent to inject token via postMessage
+window.addEventListener('message', (e) => {
+  if (e.data?.type === 'dasheng-token' && e.data?.token) {
+    // Reconnect with new token
+    if (ws) { ws.close(); ws = null; }
+    retries = 0;
+    connect();
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="UTF-8"><title>Terminal Test</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0e0e0;font:14px monospace;height:100vh;display:flex;flex-direction:column}
+#bar{display:flex;align-items:center;gap:6px;padding:6px 12px;background:#12121f;border-bottom:1px solid #1e1e2e}
+#dot{width:8px;height:8px;border-radius:50%}
+#out{flex:1;overflow:auto;padding:8px 12px;white-space:pre-wrap}
+#out div{margin-bottom:2px}
+#inp{display:flex;align-items:center;padding:4px 12px;border-top:1px solid #1e1e2e}
+#inp input{flex:1;background:none;border:none;outline:none;color:#f0f0f0;font:14px monospace;padding:6px 0}
+#inp input::placeholder{color:#555}
+.g{color:#4ade80}.r{color:#f87171}.y{color:#fbbf24}.c{color:#22d3ee}.d{color:#71717a}
+</style></head>
+<body>
+<div id="bar"><span id="dot" class="r"></span><span id="status">检测中...</span></div>
+<div id="out"><div class="c">DaShengOS Terminal Test</div></div>
+<form id="inp" onsubmit="return exec()"><span class="g">$</span><input id="cmd" placeholder="输入命令，Enter 执行" autofocus autocomplete="off"></form>
+<script>
+const out=document.getElementById('out'),dot=document.getElementById('dot'),st=document.getElementById('status'),inp=document.getElementById('cmd');
+function log(t,c=''){const d=document.createElement('div');d.className=c;d.textContent=t;out.appendChild(d);out.scrollTop=out.scrollHeight}
+function token(){try{return JSON.parse(localStorage.getItem('dasheng-auth')||'{}')?.state?.accessToken||''}catch(e){return''}}
+fetch('/api/v1/health/ping').then(r=>r.json()).then(d=>{
+  if(d.status==='ok'){dot.className='g';st.textContent='已连接 '+d.memoryMB+'MB'}
+  else{dot.className='r';st.textContent='异常'}
+}).catch(()=>{dot.className='r';st.textContent='离线'})
+async function exec(){
+  const c=inp.value.trim();if(!c)return false
+  log('$ '+c,'g');inp.value='';log('...','y')
+  try{
+    const r=await fetch('/api/v1/terminal/exec',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token()},body:JSON.stringify({command:c,cwd:'/Users/apple/Desktop/ai-workbench-v2'})})
+    const d=await r.json()
+    out.lastChild.remove()
+    if(d.output) d.output.split('\n').filter(l=>l).forEach(l=>log(l))
+    if(d.error) log('ERR: '+d.error,'r')
+  }catch(e){out.lastChild.remove();log('ERR: '+e.message,'r')}
+  return false
+}
+</script></body></html>
