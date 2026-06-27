@@ -436,3 +436,192 @@ export function autoInjectCookies(
 
   return undefined
 }
+
+
+// ═══ v8.5: Browser Agent Loop + standalone click/evaluate ═══
+
+/**
+ * 独立 click 操作 — 点击页面元素
+ */
+export async function click(
+  url: string,
+  selector: string,
+  options?: { cookies?: string; timeout?: number }
+): Promise<{ success: boolean; text: string; durationMs: number; error?: string }> {
+  const t0 = Date.now()
+  try {
+    const browser = await ensureBrowser()
+    const page = await browser.newPage()
+    try {
+      if (options?.cookies) {
+        const domain = extractDomain(url)
+        await page.context().addCookies(parseCookieString(options.cookies, domain))
+      }
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: options?.timeout || 30000 })
+      await page.waitForSelector(selector, { timeout: 10000 })
+      await page.click(selector)
+      await page.waitForTimeout(500)
+      const text = (await page.evaluate(EXTRACT_TEXT_JS)) as string
+      return { success: true, text: text.slice(0, 10000), durationMs: Date.now() - t0 }
+    } finally {
+      await page.close()
+    }
+  } catch (e: any) {
+    return { success: false, text: '', durationMs: Date.now() - t0, error: e.message }
+  }
+}
+
+/**
+ * 执行任意 JavaScript — evaluate
+ */
+export async function evaluate(
+  url: string,
+  jsCode: string,
+  options?: { cookies?: string; timeout?: number }
+): Promise<{ success: boolean; result: any; durationMs: number; error?: string }> {
+  const t0 = Date.now()
+  try {
+    const browser = await ensureBrowser()
+    const page = await browser.newPage()
+    try {
+      if (options?.cookies) {
+        const domain = extractDomain(url)
+        await page.context().addCookies(parseCookieString(options.cookies, domain))
+      }
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: options?.timeout || 30000 })
+      const result = await page.evaluate(jsCode)
+      return { success: true, result, durationMs: Date.now() - t0 }
+    } finally {
+      await page.close()
+    }
+  } catch (e: any) {
+    return { success: false, result: null, durationMs: Date.now() - t0, error: e.message }
+  }
+}
+
+/**
+ * 快照 — 同时返回 DOM 文本 + 截图 base64
+ */
+export async function snapshot(
+  url: string,
+  options?: { cookies?: string; timeout?: number }
+): Promise<{ success: boolean; url: string; title: string; text: string; screenshotBase64?: string; durationMs: number; error?: string }> {
+  const t0 = Date.now()
+  try {
+    const browser = await ensureBrowser()
+    const page = await browser.newPage()
+    try {
+      if (options?.cookies) {
+        const domain = extractDomain(url)
+        await page.context().addCookies(parseCookieString(options.cookies, domain))
+      }
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: options?.timeout || 30000 })
+      const title = await page.title()
+      const text = (await page.evaluate(EXTRACT_TEXT_JS)) as string
+      const shot = await page.screenshot({ type: 'png', fullPage: false })
+      return {
+        success: true, url, title,
+        text: text.slice(0, 50000),
+        screenshotBase64: shot.toString('base64'),
+        durationMs: Date.now() - t0,
+      }
+    } finally {
+      await page.close()
+    }
+  } catch (e: any) {
+    return { success: false, url, title: '', text: '', durationMs: Date.now() - t0, error: e.message }
+  }
+}
+
+/**
+ * Browser Agent Loop — think → act → observe → repeat
+ */
+export interface AgentStep { action: string; selector?: string; value?: string; result: string }
+export interface AgentLoopResult { success: boolean; steps: AgentStep[]; finalSnapshot: string; durationMs: number }
+
+export async function browserAgentLoop(
+  task: string,
+  startUrl: string,
+  maxSteps = 5,
+  options?: { cookies?: string; timeout?: number }
+): Promise<AgentLoopResult> {
+  const t0 = Date.now()
+  const steps: AgentStep[] = []
+
+  try {
+    const browser = await ensureBrowser()
+    const page = await browser.newPage()
+    try {
+      if (options?.cookies) {
+        const domain = extractDomain(startUrl)
+        await page.context().addCookies(parseCookieString(options.cookies, domain))
+      }
+      await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: options?.timeout || 30000 })
+
+      for (let i = 0; i < maxSteps; i++) {
+        const _text = (await page.evaluate(EXTRACT_TEXT_JS)) as string; void _text
+
+        // Simple heuristic agent:
+        // Extract links, try to find task-related content
+        const links = await page.evaluate(`(() => {
+          var all = document.querySelectorAll('a[href]');
+          var result = [];
+          for (var i = 0; i < Math.min(all.length, 20); i++) {
+            var a = all[i];
+            result.push({ text: (a.innerText || '').trim().slice(0, 50), href: a.href });
+          }
+          return result;
+        })()`) as Array<{ text: string; href: string }>
+
+        // Find most relevant link
+        const taskKeywords = task.toLowerCase().split(/\s+/).filter(w => w.length > 2)
+        const bestLink = links.find(l =>
+          taskKeywords.some(kw => l.text.toLowerCase().includes(kw) || l.href.toLowerCase().includes(kw))
+        )
+
+        if (bestLink) {
+          await page.click('a[href="' + bestLink.href + '"]')
+          await page.waitForTimeout(1000)
+          const newText = (await page.evaluate(EXTRACT_TEXT_JS)) as string
+          steps.push({ action: 'click', selector: bestLink.href, result: newText.slice(0, 200) })
+        } else {
+          // No more relevant links — search
+          const searchInputs = await page.evaluate(`(() => {
+            var all = document.querySelectorAll('input[type="text"], input[type="search"], input[name*="search"], input[name*="q"]');
+            var result = [];
+            for (var i = 0; i < all.length; i++) {
+              var el = all[i];
+              result.push({ tag: el.tagName, type: el.type, name: el.name });
+            }
+            return result;
+          })()`) as Array<{ tag: string; type: string; name: string }>
+          if (searchInputs.length > 0) {
+            const sel = searchInputs[0].name ? 'input[name="' + searchInputs[0].name + '"]' : 'input[type="text"]'
+            await page.fill(sel, task)
+            await page.keyboard.press('Enter')
+            await page.waitForTimeout(2000)
+            const searchText = (await page.evaluate(EXTRACT_TEXT_JS)) as string
+            steps.push({ action: 'search', value: task, result: searchText.slice(0, 200) })
+          }
+          break
+        }
+      }
+
+      const finalText = (await page.evaluate(EXTRACT_TEXT_JS)) as string
+      return { success: true, steps, finalSnapshot: finalText.slice(0, 5000), durationMs: Date.now() - t0 }
+    } finally {
+      await page.close()
+    }
+  } catch (e: any) {
+    return { success: false, steps, finalSnapshot: '', durationMs: Date.now() - t0 }
+  }
+}
+
+/**
+ * Check Playwright availability
+ */
+export function getBrowserStatus(): BrowserStatus {
+  if (_browser?.isConnected()) return { available: true }
+  if (_initError) return { available: false, reason: _initError }
+  return { available: false, reason: 'Not initialized — call navigate/screenshot first' }
+}

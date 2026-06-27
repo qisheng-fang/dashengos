@@ -215,4 +215,42 @@ export async function browserRoutes(app: FastifyInstance) {
     const status = getStatus()
     return reply.send(status)
   })
+
+  // ★ v8.5: Click, Evaluate, Snapshot, Agent Loop
+  app.post('/click', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { click: browserClickFn } = await import('../core/browser.js')
+    const { url, selector, cookies, timeout } = req.body as any
+    if (!url || !selector) return reply.code(400).send({ error: 'url and selector required' })
+    const result = await browserClickFn(url, selector, { cookies, timeout })
+    return reply.send(result)
+  })
+
+  app.post('/evaluate', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { evaluate: browserEvalFn } = await import('../core/browser.js')
+    const { url, jsCode, cookies, timeout } = req.body as any
+    if (!url || !jsCode) return reply.code(400).send({ error: 'url and jsCode required' })
+    const result = await browserEvalFn(url, jsCode, { cookies, timeout })
+    return reply.send(result)
+  })
+
+  app.post('/snapshot', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { snapshot: browserSnapshotFn } = await import('../core/browser.js')
+    const { url, cookies, timeout } = req.body as any
+    if (!url) return reply.code(400).send({ error: 'url required' })
+    const result = await browserSnapshotFn(url, { cookies, timeout })
+    return reply.send(result)
+  })
+
+  app.post('/agent-loop', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { browserAgentLoop } = await import('../core/browser.js')
+    const { task, url, maxSteps, cookies, timeout } = req.body as any
+    if (!task || !url) return reply.code(400).send({ error: 'task and url required' })
+    const result = await browserAgentLoop(task, url, maxSteps || 5, { cookies, timeout })
+    return reply.send(result)
+  })
+
+  app.get('/status', { preHandler: [app.authenticate] }, async () => {
+    const { getBrowserStatus } = await import('../core/browser.js')
+    return getBrowserStatus()
+  })
 }
