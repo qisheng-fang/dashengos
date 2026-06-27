@@ -181,3 +181,51 @@ export async function orchestratorRoutes(app: FastifyInstance) {
     })
   })
 }
+
+  // ★ v8.3: Agent Health endpoints
+  app.get('/health', { preHandler: [app.authenticate] }, async () => {
+    const { agentHealth } = await import('../core/agent-health.js')
+    return { summary: agentHealth.getSummary(), agents: agentHealth.getAll(), checkedAt: Date.now() }
+  })
+
+  app.get('/health/:agentId', { preHandler: [app.authenticate] }, async (req) => {
+    const { agentHealth } = await import('../core/agent-health.js')
+    const { agentId } = req.params as { agentId: string }
+    const agent = agentHealth.getAgent(agentId)
+    if (!agent) return { status: 'not_found', agentId }
+    return { agent, checkedAt: Date.now() }
+  })
+
+  app.post('/health/register', { preHandler: [app.authenticate] }, async (req) => {
+    const { agentHealth } = await import('../core/agent-health.js')
+    const { agentId, name, type, capabilities, endpoint } = req.body as any
+    if (!agentId || !name || !type) return { error: 'agentId, name, and type are required' }
+    const record = agentHealth.register(agentId, name, type, capabilities || [], endpoint)
+    return { registered: true, agent: record }
+  })
+
+  app.post('/health/heartbeat/:agentId', { preHandler: [app.authenticate] }, async (req) => {
+    const { agentHealth } = await import('../core/agent-health.js')
+    const { agentId } = req.params as { agentId: string }
+    const ok = agentHealth.heartbeat(agentId)
+    return { ack: ok, agentId, timestamp: Date.now() }
+  })
+
+  // ★ v8.3: Agent Bus endpoints
+  app.get('/bus/stats', { preHandler: [app.authenticate] }, async () => {
+    const { agentBus } = await import('../core/agent-bus.js')
+    return agentBus.getStats()
+  })
+
+  app.get('/bus/history', { preHandler: [app.authenticate] }, async (req) => {
+    const { agentBus } = await import('../core/agent-bus.js')
+    const topic = (req.query as any).topic as string | undefined
+    return { messages: agentBus.getHistory(topic) }
+  })
+
+  app.post('/bus/publish', { preHandler: [app.authenticate] }, async (req) => {
+    const { agentBus } = await import('../core/agent-bus.js')
+    const { source, topic, payload, target } = req.body as any
+    const id = agentBus.publish(source || 'api', topic || 'custom', payload || {}, target || '*')
+    return { published: true, messageId: id }
+  })

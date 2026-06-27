@@ -673,6 +673,13 @@ async function main() {
     const { startMemoryHeartbeat } = await import('./core/memory-heartbeat.js')
     startMemoryHeartbeat()
 
+    // v8.3: Agent Bus + Health Registry
+    const { agentHealth } = await import('./core/agent-health.js')
+    agentHealth.initTables()
+    agentHealth.loadPersisted()
+    agentHealth.startHealthChecks()
+    app.log.info({ summary: agentHealth.getSummary() }, 'Agent health registry started')
+
     // v8.2: Memory Graph + Consolidation
     const { initMemoryGraphTables } = await import('./core/memory-graph.js')
     initMemoryGraphTables()
