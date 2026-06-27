@@ -61,3 +61,10 @@ zvec/
 
 # === macOS ===
 *.icloud
+
+# === DaShengOS CANON 🔴 ===
+.canon/
+auth.json
+config.yaml
+.cloud-workspaces/
+*.tsbuildinfo
