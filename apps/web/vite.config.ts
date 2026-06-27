@@ -4,10 +4,16 @@ import path from 'node:path'
 
 export default defineConfig({
   plugins: [react()],
+  optimizeDeps: {
+    include: ['react', 'react-dom'],
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      'react': path.resolve(__dirname, 'node_modules/react'),
+      'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
     },
+    dedupe: ['react', 'react-dom'],
   },
   build: {
     // v0.3 PR7: 开启 sourcemap 让 lhci valid-source-maps 通过 + 调试可用

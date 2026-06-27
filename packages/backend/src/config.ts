@@ -21,7 +21,7 @@ const ConfigSchema = z.object({
 
   // JWT
   DASHENG_JWT_SECRET: z.string().min(32).default('dev-only-secret-please-replace-in-prod-32chars'),
-  DASHENG_JWT_ACCESS_TTL_SEC: z.coerce.number().default(900), // 15 min
+  DASHENG_JWT_ACCESS_TTL_SEC: z.coerce.number().default(7200), // 2 hours
   DASHENG_JWT_REFRESH_TTL_SEC: z.coerce.number().default(604800), // 7 d
 
   // LLM (mock in Phase 1; real in Phase 2)
@@ -48,8 +48,6 @@ const ConfigSchema = z.object({
   DEEPSEEK_MODEL: z.string().default('deepseek-chat'),
 
   // DeerFlow
-  DEERFLOW_ENABLED: z.coerce.boolean().default(false),
-  DEERFLOW_SOCKET_PATH: z.string().default('/tmp/dasheng/deerflow.sock'),
 
   // Rate Limit
   RATE_LIMIT_PER_MINUTE: z.coerce.number().default(60),

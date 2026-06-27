@@ -149,7 +149,7 @@ export function SkillsMarket() {
     : Object.entries(CATEGORY_LABELS).map(([value, label]) => ({ value, label }))
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="h-full overflow-auto p-6 max-w-6xl mx-auto">
       {/* Header */}
       <header className="mb-6 flex items-center justify-between flex-wrap gap-3">
         <div>

@@ -22,7 +22,7 @@ function resolvePython(): string {
   // 需要 4 级往上到项目根 → agent/.venv/bin/python3
   const projectRoot = path.join(__dirname, '..', '..', '..', '..')
   const candidates = [
-    // 项目 agent/.venv (DaShengOS deerflow)
+    // 项目 agent/.venv
     path.join(projectRoot, 'agent', '.venv', 'bin', 'python3'),
     // WorkBuddy managed Python (macOS)
     path.join(os.homedir(), '.workbuddy', 'binaries', 'python', 'versions', '3.13.12', 'bin', 'python3'),

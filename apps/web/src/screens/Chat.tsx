@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Send, Paperclip, AtSign, Bot, User, Loader2, Square, Zap, Globe, Clock, Plus, Shield, ShieldCheck, ShieldAlert, X, Code, Puzzle, Wrench, BotIcon, Cpu, ChevronDown, Check } from 'lucide-react'
+import { Send, Paperclip, AtSign, Bot, User, Loader2, Square, Zap, Globe, Clock, Plus, Shield, ShieldCheck, ShieldAlert, X, Code, Puzzle, Wrench, BotIcon, Cpu, ChevronDown, Check, CheckCircle2 } from 'lucide-react'
 import { useAuthStore } from '@/lib/auth-store'
 import { useUIStore } from '@/store/ui'
 import { cn } from '@/lib/utils'
@@ -90,10 +90,37 @@ async function streamChatSSE(
   model?: string,
 ) {
   const baseUrl = import.meta.env.VITE_API_URL || ''
-  const res = await fetch(`${baseUrl}/api/v1/chat/stream`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+  const makeReq = (tok: string) => fetch(`${baseUrl}/api/v1/chat/stream`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}`, Accept: 'text/event-stream' },
     body: JSON.stringify({ message, history, mode: approvalMode, model, projectPath: typeof window !== 'undefined' ? localStorage.getItem('dasheng_project') || '' : '' }), signal,
   })
+  let res = await makeReq(token)
+  // 401 自动刷新 token 并重试一次
+  if (res.status === 401) {
+    const store = (await import('@/lib/auth-store')).useAuthStore
+    const refresh = store.getState().refreshToken
+    if (refresh) {
+      try {
+        const refRes = await fetch(`${baseUrl}/api/v1/auth/refresh`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refresh }),
+        })
+        if (refRes.ok) {
+          const json = await refRes.json()
+          store.getState().setTokens({
+            access: json.access_token,
+            refresh: json.refresh_token ?? refresh,
+            expiresAt: Date.now() + 7200 * 1000,
+          })
+          res = await makeReq(json.access_token)
+        }
+      } catch {}
+    }
+    if (res.status === 401) {
+      store.getState().clear()
+      throw new Error('登录已过期，请重新登录')
+    }
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   if (!res.body) throw new Error('No body')
   const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = ''
@@ -428,15 +455,16 @@ export function Chat() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Step Log */}
+      {/* Current step indicator — 只显示当前执行步骤，随流式更新 */}
       {stepLog.length > 0 && (
-        <div className="mx-4 mb-0 border border-[var(--border)] rounded-lg overflow-hidden flex-shrink-0 bg-[var(--bg-secondary)]">
-          <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--bg-tertiary)] border-b border-[var(--border)]">
-            <span className="text-[0.6rem] text-[var(--text-muted)] font-mono flex items-center gap-1.5"><Clock size={10} /> 执行日志 · {stepLog.length} 步</span>
-            {sending && <span className="text-[0.6rem] text-[var(--brand)] flex items-center gap-1"><Loader2 size={9} className="animate-spin" /> 运行中</span>}
-          </div>
-          <div className="px-3 py-2 text-[0.6rem] font-mono text-[var(--text-soft)] max-h-32 overflow-y-auto space-y-0.5">
-            {stepLog.slice(-10).map((e, i) => <div key={i} className="flex gap-2"><span className="text-[var(--text-muted)]/50 flex-shrink-0">{e.ts}</span><span className="truncate">{e.text}</span></div>)}
+        <div className="mx-4 mb-0 flex-shrink-0">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)]/60 border border-[var(--border)]/50 text-xs text-[var(--text-soft)] transition-all duration-300">
+            {sending ? (
+              <Loader2 size={11} className="animate-spin text-[var(--brand)] flex-shrink-0" />
+            ) : (
+              <CheckCircle2 size={11} className="text-green-400 flex-shrink-0" />
+            )}
+            <span className="truncate">{stepLog[stepLog.length - 1]?.text || ''}</span>
           </div>
         </div>
       )}

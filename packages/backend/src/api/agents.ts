@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { ulid } from 'ulid'
 import { sqlite } from '../storage/db.js'
+import { loadAgentRegistry } from '../core/orchestrator/agent-registry.js'
 
 const CreateAgentSchema = z.object({
   name: z.string().min(1).max(128),
@@ -68,7 +69,36 @@ export async function agentRoutes(app: FastifyInstance) {
         last_used_at: u?.last_used_at ?? null,
       }
     })
-    return reply.send({ agents: [...builtin, ...custom], count: builtin.length + custom.length })
+    // 4) Agency Agents 注册表 (254+ agents)
+    const registryAgents: Array<{
+      id: string; name: string; description: string; category: string;
+      is_builtin: boolean; is_registry: boolean; session_count: number; last_used_at: null;
+      division?: string; divisionLabel?: string; emoji?: string; vibe?: string;
+    }> = []
+    try {
+      const reg = loadAgentRegistry()
+      for (const [slug, agent] of reg) {
+        if (BUILTIN_AGENTS.some(a => a.id === slug)) continue
+        const u = usageMap.get(slug)
+        registryAgents.push({
+          id: slug,
+          name: agent.name,
+          description: agent.description,
+          category: agent.division || 'specialized',
+          is_builtin: false,
+          is_registry: true,
+          session_count: u?.session_count ?? 0,
+          last_used_at: u?.last_used_at ?? null,
+          division: agent.division,
+          divisionLabel: agent.divisionLabel,
+          emoji: agent.emoji,
+          vibe: agent.vibe,
+        })
+      }
+      console.log(`[Agents API] Loaded ${registryAgents.length} registry agents from agency-agents`)
+    } catch (e: any) { console.warn('[Agents API] Registry agents load failed:', e.message) }
+
+    return reply.send({ agents: [...builtin, ...registryAgents, ...custom], count: builtin.length + registryAgents.length + custom.length })
   })
 
   // POST /agents (admin)
@@ -89,7 +119,54 @@ export async function agentRoutes(app: FastifyInstance) {
   // GET /agents/:id
   // Phase C.4 (2026-06-16) 显式字段 + config_yaml redaction (非 admin/owner 返 '[REDACTED]')
   // 之前 SELECT * 把 config_yaml (可能含 API key 模板 / 内部 prompt) 暴露给任何登录用户
-  app.get('/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
+  // GET /divisions — 部门+Agent 列表 (v8.8)
+  app.get('/divisions', { preHandler: [app.authenticate] }, async (_req, reply) => {
+    try {
+      const { readFileSync, existsSync, readdirSync } = await import('node:fs')
+      const { join, dirname } = await import('node:path')
+      const { fileURLToPath } = await import('node:url')
+      const __f = fileURLToPath(import.meta.url)
+      const __d = dirname(__f)
+      const root = join(__d, '..', '..', '..', '..', 'embedded', 'agency-agents')
+      const divFile = join(root, 'divisions.json')
+      
+      // Load division metadata
+      let divMeta: Record<string, { label: string; icon: string; color: string }> = {}
+      if (existsSync(divFile)) {
+        const raw = JSON.parse(readFileSync(divFile, 'utf-8'))
+        if (raw.divisions) divMeta = raw.divisions
+      }
+      
+      const SKIP = new Set(['.git', 'scripts', 'integrations', 'examples', 'CONTRIBUTING.md', 'CONTRIBUTING_zh-CN.md', 'LICENSE', 'README.md', 'SECURITY.md', 'divisions.json'])
+      const divs: any[] = []
+      
+      for (const name of readdirSync(root)) {
+        if (SKIP.has(name)) continue
+        const dirPath = join(root, name)
+        try {
+          const stat = await import('node:fs/promises').then(m => m.stat(dirPath))
+          if (!stat.isDirectory()) continue
+          const files = readdirSync(dirPath).filter(f => f.endsWith('.md'))
+          const meta = divMeta[name] || { label: name.charAt(0).toUpperCase() + name.slice(1).replace(/-/g, ' '), icon: 'Folder', color: '#888' }
+          divs.push({
+            slug: name,
+            label: meta.label,
+            icon: meta.icon,
+            color: meta.color,
+            count: files.length,
+            agents: files.slice(0, 20).map(f => ({
+              name: f.replace('.md', '').replace(name + '-', '').replace(/-/g, ' ').replace(/\w/g, (c: string) => c.toUpperCase()),
+              file: f,
+            })),
+          })
+        } catch { /* skip */ }
+      }
+      
+      return reply.send({ divisions: divs })
+    } catch (e: any) { return reply.code(500).send({ error: e.message }) }
+  })
+
+    app.get('/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const row = sqlite
       .prepare(
@@ -135,3 +212,4 @@ export async function agentRoutes(app: FastifyInstance) {
     return reply.send({ id, ...parsed.data })
   })
 }
+

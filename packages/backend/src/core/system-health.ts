@@ -198,12 +198,38 @@ export async function runFullHealthCheck(): Promise<HealthReport> {
       const mcpData = await mcpRes.json() as { servers?: Array<{ id: string; name: string; status: string }> }
       const servers = mcpData.servers || []
       
+      // 额外：进程级检测 (弥补 DB 状态未及时更新的情况)
+      const processCheck = (await (async () => {
+        try {
+          const { execSync } = await import('node:child_process')
+          const ps = execSync('ps aux 2>/dev/null | grep -v grep', {
+            encoding: 'utf-8', timeout: 3000, maxBuffer: 512 * 1024
+          })
+          return ps
+        } catch { return '' }
+      })())
+      
       for (const s of servers) {
+        // 检查真实进程是否在运行（进程名/参数匹配）
+        let realRunning = false
+        const lowerName = (s.name || '').toLowerCase()
+        if (lowerName.includes('playwright')) {
+          realRunning = processCheck.includes('playwright') || processCheck.includes('@playwright/mcp')
+        } else if (lowerName.includes('xcode')) {
+          realRunning = processCheck.includes('xcodebuildmcp')
+        } else if (lowerName.includes('codex') || lowerName.includes('security')) {
+          realRunning = processCheck.includes('codex-security') || processCheck.includes('mcp/server.mjs')
+        } else if (lowerName.includes('agnes')) {
+          realRunning = processCheck.includes('agnes_mcp_server')
+        }
+        
+        // DB 状态为 running 或 实际进程存在 → healthy
+        const isHealthy = s.status === 'running' || realRunning
         items.push({
           name: `MCP: ${s.name || s.id}`, category: 'mcp',
-          status: s.status === 'STARTED' ? 'healthy' : 'down',
+          status: isHealthy ? 'healthy' : 'down',
           latencyMs: 0,
-          detail: s.status === 'STARTED' ? '运行中' : s.status,
+          detail: isHealthy ? (s.status === 'running' ? '运行中' : '进程在线(DB未同步)') : s.status,
         })
       }
     }

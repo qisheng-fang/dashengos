@@ -8,7 +8,6 @@
 //   - DELETE /api/v1/settings/provider/:id       清 key
 //   - POST /api/v1/settings/provider/:id/test    真测连通 (打 provider 公共 API)
 
-import { createFileRoute } from '@tanstack/react-router'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -50,10 +49,6 @@ const PROVIDER_META: ProviderMeta[] = [
 function metaToProvider(m: ProviderMeta): Provider {
   return { ...m, hasKey: m.local, healthy: null, lastChecked: null, errorMessage: null }
 }
-
-export const Route = createFileRoute('/_workspace/settings/models/provider')({
-  component: ProviderPage,
-})
 
 export function ProviderPage() {
   const [providers, setProviders] = useState<Provider[]>(PROVIDER_META.map(metaToProvider))

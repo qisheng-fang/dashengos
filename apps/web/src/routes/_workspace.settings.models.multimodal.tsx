@@ -6,7 +6,6 @@
 //   - POST /api/v1/settings/provider/:id/test (按 model 所属 provider 路由)
 //   - 静态 catalog, 无 save 需求 (model 选择是其他屏的事)
 
-import { createFileRoute } from '@tanstack/react-router'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Image as ImageIcon, Video, Volume2, Mic, Music2, Loader2, CheckCircle2, RefreshCw } from 'lucide-react'
@@ -62,10 +61,6 @@ const MODALITY_LABEL: Record<Modality, string> = {
   tts: '🔊 TTS',
   music: '🎵 音乐',
 }
-
-export const Route = createFileRoute('/_workspace/settings/models/multimodal')({
-  component: MultimodalModelsPage,
-})
 
 export function MultimodalModelsPage() {
   const [models, setModels] = useState<MultimodalModel[]>([])

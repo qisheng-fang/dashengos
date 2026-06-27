@@ -117,7 +117,6 @@ export async function doctorRoutes(app: FastifyInstance) {
         checks: [
           checkPort(8000, true),
           checkPort(3000, true),
-          checkSocket('/tmp/dasheng/deerflow.sock'),
         ]
       },
       {
@@ -163,6 +162,163 @@ export async function doctorRoutes(app: FastifyInstance) {
           process.env.DASHENG_STRICT_SECURITY === 'true'
             ? ok('严格安全模式', 'enabled')
             : info('严格安全模式', 'disabled (开发环境)'),
+        ]
+      },
+
+      {
+        name: '🧠 记忆系统',
+        checks: [
+          (() => {
+            try {
+              const memRows = safeCount('SELECT COUNT(*) as c FROM cross_session_memory')
+              return ok('跨会话记忆', `${memRows} 条记录`)
+            } catch { return warn('跨会话记忆', '表未创建', 'POST /api/v1/memory-heartbeat/init') }
+          })(),
+          (() => {
+            try {
+              const decayed = safeCount("SELECT COUNT(*) as c FROM cross_session_memory WHERE decayed_at IS NOT NULL")
+              return info('记忆衰减', `${decayed} 条已衰减`)
+            } catch { return info('记忆衰减', 'N/A') }
+          })(),
+          (() => {
+            try {
+              const profiles = safeCount('SELECT COUNT(*) as c FROM dynamic_user_profiles')
+              return info('用户画像', `${profiles} 个`)
+            } catch { return info('用户画像', '表未创建') }
+          })(),
+        ]
+      },
+      {
+        name: '🔧 MCP 服务器',
+        checks: [
+          (() => {
+            try {
+              const servers = sqlite.prepare('SELECT COUNT(*) as c FROM mcp_servers').get() as { c: number }
+              const running = sqlite.prepare("SELECT COUNT(*) as c FROM mcp_servers WHERE status = 'STARTED'").get() as { c: number }
+              return ok('MCP 服务器', `${running.c}/${servers.c} 在线`)
+            } catch { return fail('MCP 服务器', '表不存在') }
+          })(),
+          (() => {
+            try {
+              const { execSync } = require('node:child_process')
+              const ps = execSync('ps aux | grep -v grep | grep -c agnes_mcp_server', { encoding: 'utf-8', timeout: 3000 }).trim()
+              return parseInt(ps) > 0 ? ok('Agnes AI 进程', '运行中') : warn('Agnes AI 进程', '未检测到')
+            } catch { return warn('Agnes AI 进程', '无法检测') }
+          })(),
+          (() => {
+            try {
+              const mcpDir = '/Users/apple/.codex/plugins/cache/openai-api-curated/codex-security'
+              return existsSync(mcpDir) ? ok('Codex Security 目录', '存在') : warn('Codex Security 目录', '不存在')
+            } catch { return warn('Codex Security 目录', '无法检测') }
+          })(),
+        ]
+      },
+      {
+        name: '📊 观测性',
+        checks: [
+          process.env.METRICS_ENABLED === 'true'
+            ? ok('Prometheus 指标', `端口 ${process.env.METRICS_PORT || 9090}`)
+            : info('Prometheus 指标', '未启用'),
+          (() => {
+            const logDir = '/tmp/dasheng-logs'
+            if (!existsSync(logDir)) return warn('日志目录', '不存在', `mkdir -p ${logDir}`)
+            try {
+              const files = require('node:fs').readdirSync(logDir)
+              return ok('日志目录', `${files.length} 个文件`)
+            } catch { return warn('日志目录', '不可读') }
+          })(),
+          (() => {
+            try {
+              const otelLog = '/Users/apple/Desktop/ai-workbench-v2/logs/otel-traces.jsonl'
+              if (existsSync(otelLog)) {
+                const stat = statSync(otelLog)
+                return ok('OTel 追踪', `${(stat.size / 1024).toFixed(1)}KB`)
+              }
+              return info('OTel 追踪', '暂无数据')
+            } catch { return info('OTel 追踪', '未启用') }
+          })(),
+        ]
+      },
+      {
+        name: '🔄 备份系统',
+        checks: [
+          (() => {
+            const backupDir = '/Users/apple/Desktop/ai-workbench-v2/backups'
+            if (!existsSync(backupDir)) return fail('备份目录', '不存在', `mkdir -p ${backupDir}`)
+            try {
+              const files = require('node:fs').readdirSync(backupDir).filter((f: string) => f.endsWith('.db'))
+              const latest = files.sort().pop()
+              return ok('自动备份', `${files.length} 个快照 · 最新: ${latest || '无'}`)
+            } catch { return warn('自动备份', '目录不可读') }
+          })(),
+          (() => {
+            const persistEnv = '/Users/apple/Desktop/ai-workbench-v2/.env.persist'
+            return existsSync(persistEnv) ? ok('.env.persist', '存在') : warn('.env.persist', '不存在', 'POST /api/v1/backup/create')
+          })(),
+          (() => {
+            const protectHash = '/Users/apple/Desktop/ai-workbench-v2/.codex-protect-hash'
+            return existsSync(protectHash) ? ok('系统提示词哈希', '已保护') : warn('系统提示词哈希', '未设置')
+          })(),
+        ]
+      },
+      {
+        name: '🎯 编排器',
+        checks: [
+          (() => {
+            try {
+              const { execSync } = require('node:child_process')
+              execSync(`${PYTHON} -c "import langgraph"`, { stdio: 'pipe', timeout: 5000, env: PY_ENV })
+              return ok('LangGraph', '已安装')
+            } catch { return warn('LangGraph', '未安装', `${PYTHON} -m pip install langgraph`) }
+          })(),
+          (() => {
+            try {
+              const agentsDir = '/Users/apple/Desktop/ai-workbench-v2/packages/backend/src/core/orchestrator/agents'
+              if (existsSync(agentsDir)) {
+                const files = require('node:fs').readdirSync(agentsDir)
+                return ok('Agent 注册表', `${files.length} 个 Agent`)
+              }
+              return warn('Agent 注册表', '目录不存在')
+            } catch { return warn('Agent 注册表', '不可读') }
+          })(),
+          (() => {
+            const routes = safeCount('SELECT COUNT(*) as c FROM orchestration_runs')
+            return info('编排运行记录', `${routes} 条`)
+          })(),
+        ]
+      },
+      {
+        name: '🌍 网络连通性',
+        checks: [
+          (() => {
+            try {
+              const { execSync } = require('node:child_process')
+              execSync('curl -s --max-time 5 https://api.deepseek.com/v1/models > /dev/null 2>&1')
+              return ok('DeepSeek API', '可达')
+            } catch { return fail('DeepSeek API', '不可达', '检查网络/代理') }
+          })(),
+          (() => {
+            try {
+              const { execSync } = require('node:child_process')
+              execSync('curl -s --max-time 5 https://github.com > /dev/null 2>&1')
+              return ok('GitHub', '可达')
+            } catch { return warn('GitHub', '不可达', '检查网络/代理') }
+          })(),
+          (() => {
+            try {
+              const { execSync } = require('node:child_process')
+              execSync('curl -s --max-time 5 https://google.com > /dev/null 2>&1')
+              return ok('Google', '可达')
+            } catch { return warn('Google', '不可达', '检查网络/代理') }
+          })(),
+          (() => {
+            const host = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434'
+            try {
+              const { execSync } = require('node:child_process')
+              execSync(`curl -s --max-time 3 ${host}/api/tags > /dev/null 2>&1`)
+              return ok('Ollama 本地', host)
+            } catch { return info('Ollama 本地', '未启用') }
+          })(),
         ]
       },
     ]

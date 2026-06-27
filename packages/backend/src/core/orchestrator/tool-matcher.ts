@@ -41,9 +41,11 @@ interface ToolRule {
 
 const TOOL_RULES: ToolRule[] = [
   // 搜索/调研类
-  { keywords: ['搜索','查找','查询','调研','报告','分析','数据','市场','行业','趋势','最新','news','search','research','report'], tools: [
+  { keywords: ['搜索','查找','查询','调研','报告','分析','数据','市场','行业','趋势','最新','news','search','research','report','github','开源','open source','repo','repository','项目','project','推荐','recommend'], tools: [
     { name: 'web_search', source: 'core' },
+    { name: 'github_search', source: 'core' },
     { name: 'web_fetch', source: 'core' },
+    { name: 'web_fetch_url', source: 'core' },
     { name: 'execute_skill', source: 'core' },
   ]},
   // 文件读写类
@@ -62,7 +64,7 @@ const TOOL_RULES: ToolRule[] = [
     { name: 'run_command', source: 'core' },
   ]},
   // 命令执行类
-  { keywords: ['运行','执行','安装','启动','停止','重启','部署','构建','build','run','start','stop','install','deploy'], tools: [
+  { keywords: ['运行','执行','安装','启动','停止','重启','部署','构建','命令','终端','shell','bash','zsh','pwd','ls','grep','find','cat','npm','git','node','python','pip','brew','docker','curl','wget','build','run','start','stop','install','deploy'], tools: [
     { name: 'run_command', source: 'core' },
     { name: 'install_package', source: 'core' },
     { name: 'restart_service', source: 'core' },

@@ -404,7 +404,7 @@ export function saveContextEntry(opts: {
       JSON.stringify(opts.pendingItems),
       Date.now(),
     )
-  } catch { /* non-critical */ }
+  } catch(e) { console.error("[Memory] saveCrossSessionMemory failed:", (e as Error).message?.slice(0,100)) }
 }
 
 // ─── Wiki 知识库 ──────────────────────────────────────────
@@ -606,7 +606,17 @@ function loadCrossSessionMemory(userId: string, limit = 8, query?: string): Cros
       }
     })
     entries.sort((a, b) => (b._score || 0) - (a._score || 0))
-    return entries.slice(0, limit).map(({ _score, ...rest }) => rest)
+    const top = entries.slice(0, limit)
+    
+    // 更新 access_count (修复: loadMemoryContext 检索后未标记)
+    for (const entry of top) {
+      try {
+        sqlite.prepare('UPDATE cross_session_memory SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?')
+          .run(now, entry.id)
+      } catch { /* non-critical */ }
+    }
+    
+    return top.map(({ _score, ...rest }) => rest)
   } catch {
     return []
   }
@@ -659,7 +669,7 @@ export function searchCrossSessionMemory(userId: string, query: string, limit = 
       try {
         sqlite.prepare('UPDATE cross_session_memory SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?')
           .run(Date.now(), s.row.id)
-      } catch { /* non-critical */ }
+      } catch(e) { console.error("[Memory] saveCrossSessionMemory failed:", (e as Error).message?.slice(0,100)) }
     }
 
     // ★ Vector Memory: 混合搜索 (关键词 + 语义)
@@ -716,8 +726,7 @@ export function saveCrossSessionMemory(opts: {
   toolSequence?: string[]
 }): void {
   ensureCrossSessionTable()
-
-  try {
+    try {
     // 去重: 同 category + 关键词重叠 > 50% 视为更新
     const existing = sqlite
       .prepare('SELECT id, keywords FROM cross_session_memory WHERE user_id = ? AND category = ?')
@@ -740,6 +749,12 @@ export function saveCrossSessionMemory(opts: {
           Date.now(),
           e.id,
         )
+        // ★ 记忆账本: 记录更新操作
+        try {
+          sqlite.prepare(`INSERT INTO memory_ledger (user_id, operation, target_type, target_id, new_value, source, timestamp)
+            VALUES (?, 'update', 'cross_session_memory', ?, ?, 'auto-extract', ?)`).run(
+            opts.userId, String(e.id), opts.summary.slice(0, 200), Date.now())
+        } catch { /* ledger non-critical */ }
         return
       }
     }
@@ -758,12 +773,19 @@ export function saveCrossSessionMemory(opts: {
       Date.now(),
       Date.now(),
     )
+    // ★ 记忆账本: 记录新增操作
+    const newId = (insertResult as any).lastInsertRowid as number
+    try {
+      sqlite.prepare(`INSERT INTO memory_ledger (user_id, operation, target_type, target_id, new_value, source, timestamp)
+        VALUES (?, 'insert', 'cross_session_memory', ?, ?, 'auto-extract', ?)`).run(
+        opts.userId, String(newId), opts.summary.slice(0, 200), Date.now())
+    } catch { /* ledger non-critical */ }
     // ★ Vector Memory: 自动嵌入并索引
     try {
       const newId = (insertResult as any).lastInsertRowid as number
       if (newId) indexMemoryEmbedding(newId, opts.summary + ' ' + opts.keywords.join(' '))
     } catch { /* vector indexing is non-critical */ }
-  } catch { /* non-critical */ }
+  } catch(e) { console.error("[Memory] saveCrossSessionMemory failed:", (e as Error).message?.slice(0,100)) }
 }
 
 /**
@@ -775,23 +797,42 @@ export function extractAndSaveCrossSessionMemory(opts: {
   sessionId: string
   userMessage: string
   assistantResponse: string
-  toolCalls?: string[] // 用到的工具序列
+  toolCalls?: string[]
 }): void {
   const { userId, sessionId, userMessage, assistantResponse, toolCalls } = opts
 
-  // 1. 提取关键词
-  const keywords = extractKeywords(userMessage + ' ' + assistantResponse.slice(0, 500))
+  // Skip trivial/very short exchanges
+  if (userMessage.length < 4) return
 
-  // 2. 分类
+  // 1. 智能分类
   let category: CrossSessionEntry['category'] = 'fact'
-  if (/决定|选择|确认|方案|采用/.test(assistantResponse)) category = 'decision'
-  else if (/喜欢|偏好|习惯|想要/.test(userMessage)) category = 'preference'
-  else if (/发现|规律|关键|本质|根因/.test(assistantResponse)) category = 'insight'
-  else if (toolCalls && toolCalls.length >= 3) category = 'task_pattern'
-  else if (toolCalls && toolCalls.length >= 2 && /重复|每次|经常|再|又/.test(userMessage)) category = 'skill_candidate'
+  if (/喜欢|偏好|习惯|想要|希望|不要|讨厌|设置|配置|改成|换成|切换/.test(userMessage)) category = 'preference'
+  else if (/决定|选择|确认|方案|采用/.test(userMessage)) category = 'decision'
+  else if (/发现|规律|关键|本质|根因|原来|问题.*是/.test(userMessage)) category = 'insight'
+  else if (toolCalls && toolCalls.length >= 2) category = 'task_pattern'
 
-  // 3. 生成摘要 (取 assistant 回复的前 200 字)
-  const summary = assistantResponse.replace(/\n/g, ' ').slice(0, 200).trim()
+  // 2. 去重：检查是否已有高度相似的记忆
+  const existing = sqlite.prepare(
+    'SELECT id, summary FROM cross_session_memory WHERE user_id = ? AND category = ? ORDER BY id DESC LIMIT 20'
+  ).all(userId, category) as Array<{ id: number; summary: string }>
+  
+  const shortMsg = userMessage.slice(0, 60)
+  for (const row of existing) {
+    // Simple overlap check
+    const overlap = (row.summary || '').slice(0, 60)
+    const commonChars = [...shortMsg].filter(c => overlap.includes(c)).length
+    if (commonChars > shortMsg.length * 0.7) {
+      // Similar memory exists, update access count instead of duplicating
+      sqlite.prepare(
+        'UPDATE cross_session_memory SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?'
+      ).run(Date.now(), row.id)
+      return
+    }
+  }
+
+  // 3. 生成摘要 — 基于用户消息内容，提取关键信息
+  const keywords = extractKeywords(userMessage)
+  const summary = userMessage.replace(/\n/g, ' ').slice(0, 200).trim()
 
   // 4. 保存
   saveCrossSessionMemory({

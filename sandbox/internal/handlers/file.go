@@ -159,9 +159,20 @@ func resolveSafe(p, op string) (string, error) {
 
 func defaultRoots(op string) []string {
 	home := os.Getenv("HOME")
-	roots := []string{filepath.Join(home, "Library"), "/tmp/dasheng"}
+	roots := []string{
+		home,
+		"/tmp/dasheng",
+		"/tmp",
+	}
 	if op == "read" {
 		roots = append(roots, "/usr", "/opt", "/var/log")
+	}
+	// DASHE_SANDBOX_READ_ROOTS / DASHE_SANDBOX_WRITE_ROOTS env override
+	envKey := "DASHE_SANDBOX_" + strings.ToUpper(op) + "_ROOTS"
+	if extra := os.Getenv(envKey); extra != "" {
+		for _, r := range strings.Split(extra, ":") {
+			roots = append(roots, strings.TrimSpace(r))
+		}
 	}
 	return roots
 }

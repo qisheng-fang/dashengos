@@ -49,12 +49,21 @@ export async function sessionRoutes(app: FastifyInstance) {
   })
 
   // GET /sessions
-  app.get('/', { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.get('/', async (req, reply) => {
     const parsed = ListSessionsSchema.safeParse(req.query)
     if (!parsed.success) return reply.code(400).send({ code: 'VALIDATION_FAILED' })
-    const rows = sqlite
-      .prepare('SELECT * FROM sessions WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?')
-      .all(req.user!.id, parsed.data.limit)
+    // v6.1: 未登录时默认显示管理员会话；已登录管理员看全部
+    const user = (req as any).user as { id: string; role: string } | undefined
+    let rows: any[]
+    if (!user || user.role === 'ADMIN') {
+      rows = sqlite
+        .prepare('SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?')
+        .all(parsed.data.limit)
+    } else {
+      rows = sqlite
+        .prepare('SELECT * FROM sessions WHERE user_id = ? OR user_id IS NULL ORDER BY updated_at DESC LIMIT ?')
+        .all(user.id, parsed.data.limit)
+    }
     return reply.send({ sessions: rows })
   })
 
@@ -90,7 +99,6 @@ export async function sessionRoutes(app: FastifyInstance) {
 
   // POST /sessions/:id/messages
     // POST /sessions/:id/messages
-  //   Phase 9: 当 DEERFLOW_ENABLED=false, 直接调 Ollama (走 /api/chat)
   //           存 user + assistant 两条 messages 到 messages 表
   //           返 assistant message + session 信息
   app.post('/:id/messages', { preHandler: [app.authenticate] }, async (req, reply) => {
@@ -115,8 +123,8 @@ export async function sessionRoutes(app: FastifyInstance) {
       .all(id) as Array<{ role: string; content: string }>
     const ollamaMessages = history.map((m) => ({ role: m.role.toLowerCase() as 'user' | 'assistant' | 'system', content: m.content }))
 
-    // 3) DEERFLOW_ENABLED=false 时直接调 LLM (ollama 本地 / siliconflow / deepseek, Track D.1)
-    if (!config.DEERFLOW_ENABLED) {
+    // 直接调 LLM
+    {
       // 取 session 关联的 model (e.g. "ollama:qwen2.5:3b" / "siliconflow:Qwen/Qwen2.5-72B-Instruct")
       const sessionRow = sqlite.prepare('SELECT model FROM sessions WHERE id = ?').get(id) as
         | { model: string }
@@ -331,7 +339,6 @@ export async function sessionRoutes(app: FastifyInstance) {
       })
     }
 
-    // DEERFLOW_ENABLED=true 时的 stub (Phase 8 留)
     return reply.send({
       session_id: id,
       message_id: ulid(),

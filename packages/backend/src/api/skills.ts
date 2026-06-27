@@ -28,16 +28,36 @@ export async function skillRoutes(app: FastifyInstance) {
   // =========================================================================
 
   // GET /skills/marketplace — 列出市场中的可用 skill
-  app.get('/marketplace', { preHandler: [app.authenticate] }, async (req, reply) => {
+app.get('/marketplace', async (req, reply) => {
     const { search, category } = req.query as { search?: string; category?: string }
     const results = searchMarketplace(search || '', category || 'all')
 
-    const db = getDb()
-    const userId = (req.user as { id: string }).id
-    const installedRows = db.prepare(
-      'SELECT skill_id, version, status FROM skill_installs WHERE user_id = ? AND status = ?',
-    ).all(userId, 'installed') as Array<{ skill_id: string; version: string; status: string }>
-    const installedMap = new Map(installedRows.map((r) => [r.skill_id, { version: r.version, status: r.status }]))
+    // v6.1: 允许未登录浏览市场，已登录则显示安装状态
+    // 获取用户ID: 优先从 authenticate preHandler 设置的 req.user，否则从 Auth header 解码
+    const user = (req as any).user as { id: string } | undefined
+    let userId: string | undefined = user?.id
+    
+    // 若无 authenticate preHandler，尝试从 Authorization header 中提取 user_id
+    if (!userId) {
+      const authHeader = req.headers.authorization
+      if (authHeader?.startsWith('Bearer ')) {
+        try {
+          const token = authHeader.slice(7)
+          // 轻量 decode（不验签），仅提取 sub
+          const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'))
+          if (payload?.sub) userId = payload.sub
+        } catch { /* ignore decode errors */ }
+      }
+    }
+    
+    let installedMap = new Map<string, { version: string; status: string }>()
+    if (userId) {
+      const db = getDb()
+      const installedRows = db.prepare(
+        'SELECT skill_id, version, status FROM skill_installs WHERE user_id = ? AND status = ?',
+      ).all(userId, 'installed') as Array<{ skill_id: string; version: string; status: string }>
+      installedMap = new Map(installedRows.map((r) => [r.skill_id, { version: r.version, status: r.status }]))
+    }
 
     const skills = results.map((s) => ({
       ...s,
@@ -49,7 +69,7 @@ export async function skillRoutes(app: FastifyInstance) {
   })
 
   // GET /skills/marketplace/categories
-  app.get('/marketplace/categories', { preHandler: [app.authenticate] }, async (_req, reply) => {
+  app.get('/marketplace/categories', async (_req, reply) => {
     return reply.send({ categories: MARKETPLACE_CATEGORIES })
   })
 
@@ -100,6 +120,7 @@ export async function skillRoutes(app: FastifyInstance) {
 
   // POST /skills/install — 从市场安装 skill
   app.post('/install', { preHandler: [app.authenticate] }, async (req, reply) => {
+    try {
     const db = getDb()
     const userId = (req.user as { id: string }).id
     const { skill_id, version } = req.body as { skill_id: string; version?: string }
@@ -108,7 +129,24 @@ export async function skillRoutes(app: FastifyInstance) {
       return reply.code(400).send({ code: 'BAD_REQUEST', message: 'skill_id is required' })
     }
 
-    const entry = getMarketplaceEntry(skill_id)
+    // 优先从硬编码市场目录查找，再回退到 skills 表 (WorkBuddy 安装的技能)
+    let entry = getMarketplaceEntry(skill_id)
+    if (!entry) {
+      const dbSkill = db.prepare('SELECT * FROM skills WHERE id = ?').get(skill_id) as Record<string, unknown> | undefined
+      if (dbSkill) {
+        entry = {
+          id: dbSkill.id as string,
+          name: dbSkill.name as string,
+          description: (dbSkill.description as string) || '',
+          category: 'custom',
+          version: (dbSkill.version as string) || '1.0.0',
+          author: 'WorkBuddy',
+          installs: 0,
+          rating: 0,
+          manifest: typeof dbSkill.manifest_json === 'string' ? JSON.parse(dbSkill.manifest_json as string) : (dbSkill.manifest_json || {}),
+        }
+      }
+    }
     if (!entry) {
       return reply.code(404).send({ code: 'NOT_FOUND', message: 'Skill not found in marketplace' })
     }
@@ -150,6 +188,14 @@ export async function skillRoutes(app: FastifyInstance) {
     }
 
     return reply.send({ ok: true, skill_id, version: installVersion, installed_at: now })
+    } catch (err: any) {
+      req.log.error({ err: err.message, stack: err.stack }, 'install failed')
+      return reply.code(500).send({
+        code: 'INSTALL_ERROR',
+        message: err.message || 'Install failed',
+        request_id: req.id,
+      })
+    }
   })
 
   // =========================================================================
@@ -208,28 +254,46 @@ export async function skillRoutes(app: FastifyInstance) {
   })
 
   // POST /skills/:id/uninstall — 卸载
-  app.post('/:id/uninstall', { preHandler: [app.authenticate] }, async (req, reply) => {
-    const db = getDb()
-    const userId = (req.user as { id: string }).id
-    const { id } = req.params as { id: string }
+  app.post('/:id/uninstall', {
+    preHandler: [app.authenticate],
+    schema: {
+      params: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+    },
+  }, async (req, reply) => {
+    try {
+      const db = getDb()
+      const userId = (req.user as { id: string }).id
+      const { id } = req.params as { id: string }
 
-    const existing = db.prepare(
-      'SELECT * FROM skill_installs WHERE user_id = ? AND skill_id = ? AND status = ?',
-    ).get(userId, id, 'installed') as Record<string, unknown> | undefined
+      const existing = db.prepare(
+        'SELECT * FROM skill_installs WHERE user_id = ? AND skill_id = ? AND status = ?',
+      ).get(userId, id, 'installed') as Record<string, unknown> | undefined
 
-    if (!existing) {
-      return reply.code(404).send({ code: 'NOT_INSTALLED', message: 'Skill is not installed' })
+      if (!existing) {
+        return reply.code(404).send({ code: 'NOT_INSTALLED', message: 'Skill is not installed' })
+      }
+
+      const now = Date.now()
+      db.prepare(
+        "UPDATE skill_installs SET status = 'uninstalled', uninstalled_at = ? WHERE user_id = ? AND skill_id = ?",
+      ).run(now, userId, id)
+
+      // 移除 agent_skills 关联
+      db.prepare('DELETE FROM agent_skills WHERE skill_id = ?').run(id)
+
+      return reply.send({ ok: true, skill_id: id, uninstalled_at: now })
+    } catch (err: any) {
+      req.log.error({ err: err.message, stack: err.stack }, 'uninstall failed')
+      return reply.code(500).send({
+        code: 'UNINSTALL_ERROR',
+        message: err.message || 'Uninstall failed',
+        request_id: req.id,
+      })
     }
-
-    const now = Date.now()
-    db.prepare(
-      "UPDATE skill_installs SET status = 'uninstalled', uninstalled_at = ? WHERE user_id = ? AND skill_id = ?",
-    ).run(now, userId, id)
-
-    // 移除 agent_skills 关联
-    db.prepare('DELETE FROM agent_skills WHERE skill_id = ?').run(id)
-
-    return reply.send({ ok: true, skill_id: id, uninstalled_at: now })
   })
 
   // POST /skills/:id/configure — 配置

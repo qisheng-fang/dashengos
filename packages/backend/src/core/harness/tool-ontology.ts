@@ -26,7 +26,7 @@ interface TaskChain {
  * Build a compact but complete tool/skill usage guide.
  * Returns a string intended for injection into SECTION 8 of system prompt.
  */
-export function buildDynamicToolOntology(userMessage?: string): string {
+export function buildDynamicToolOntology(userMessage?: string, providerName?: string): string {
   const offlineMCP = getOfflineMCPToolNames()
   const parts: string[] = []
 
@@ -45,7 +45,31 @@ export function buildDynamicToolOntology(userMessage?: string): string {
   // ── 5. Unavailable tools ──
   parts.push(buildUnavailable(categories))
 
+  // ── Provider-specific format guidance ──
+  if (providerName) {
+    parts.push(buildProviderGuidance(providerName))
+  }
+
   return parts.join('\n\n')
+}
+
+function buildProviderGuidance(provider: string): string {
+  switch (provider) {
+    case 'anthropic':
+      return `[FORMAT:ANTHROPIC] Use tool_use content blocks. Each tool call is a separate block with id, name, and input fields.
+Example: {"type":"tool_use","id":"toolu_01","name":"web_search","input":{"query":"market data 2026"}}
+Put results in your text response after tool_use blocks complete.`
+
+    case 'google':
+      return `[FORMAT:GOOGLE] Use functionCall in response parts. Separate function calls from text parts.
+Example: {"functionCall":{"name":"web_search","args":{"query":"market data 2026"}}}
+Return function results in subsequent text parts.`
+
+    default:
+      return `[FORMAT:OPENAI] Use function calling. Call tools via function_call in your response.
+Tool definitions are provided. ALWAYS call tools when you need external data — do NOT guess or describe what you would do.
+After tool results: continue reasoning and produce the final deliverable.`
+  }
 }
 
 function categorizeTools(offlineMCP: Set<string>): Map<string, ToolCategory> {

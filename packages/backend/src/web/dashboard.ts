@@ -40,8 +40,6 @@ async function buildStatusBlock(): Promise<Record<string, unknown>> {
 
   const fastify = checkPort(8000)
   const vite = checkPort(3000)
-  const socketPath = '/tmp/dasheng/deerflow.sock'
-  const deerflowRunning = existsSync(socketPath)
 
   return {
     version: '0.3.0',
@@ -50,7 +48,6 @@ async function buildStatusBlock(): Promise<Record<string, unknown>> {
     services: {
       fastify: { running: fastify.running, port: 8000 },
       vite: { running: vite.running, port: 3000 },
-      deerflow: { running: deerflowRunning, socket: socketPath },
     },
     storage: {
       docs_dir: existsSync('/tmp/dasheng-docs'),

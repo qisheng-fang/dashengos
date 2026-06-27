@@ -13,6 +13,7 @@ import { useLocation } from '@tanstack/react-router'
 import ChatCopilot from '@/components/ChatCopilot'
 import ConversationHistory from '@/components/ConversationHistory'
 import ConfirmationGate from '@/components/ConfirmationGate'  // P3 · 写操作确认门
+import OutputGatewayMonitor from '@/components/OutputGatewayMonitor'  // Output Gateway 安全横幅
 import ModelGeneratorPanel from '@/components/panels/ModelGeneratorPanel'
 import S2B2CDeployPanel from '@/components/panels/S2B2CDeployPanel'
 import MarketingSOPPanel from '@/components/panels/MarketingSOPPanel'
@@ -53,6 +54,9 @@ export function CommandCenter() {
     <div className="flex h-full w-full bg-neutral-950 text-neutral-100 overflow-hidden">
       {/* P3: 写操作确认门（全局浮层） */}
       <ConfirmationGate />
+
+      {/* Output Gateway: 安全输出过滤器状态监控 */}
+      <OutputGatewayMonitor />
 
       {/* 左侧 LUI：对话中枢 */}
       <div className={`h-full bg-neutral-900/50 backdrop-blur-xl flex flex-row overflow-hidden transition-all duration-300 ${

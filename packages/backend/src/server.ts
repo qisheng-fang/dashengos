@@ -6,6 +6,38 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 //   ⚠️ 之前 v0.3 backend 不读 .env, 这是历史遗留 bug. 现在第一行 import 'dotenv/config'
 import 'dotenv/config'
 
+// ═══ DaShengOS Integrity Guard v8.8 ═══
+// 运行时系统提示词哈希校验 — 防止未经授权的修改
+import { readFileSync, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __INTEGRITY_DIR = dirname(fileURLToPath(import.meta.url))
+// Canon checksums are self-contained in system-prompt-canon.ts
+
+async function verifySystemPromptIntegrity(): Promise<boolean> {
+  try {
+    const { verifyPromptIntegrity, getPromptChecksum } = await import('./core/harness/system-prompt-canon.js')
+    const check = verifyPromptIntegrity()
+    if (check.ok) {
+      console.log('[IntegrityGuard] System prompt integrity verified \u2705  checksum: ' + check.currentHash.slice(0,16))
+      return true
+    }
+    console.error('[IntegrityGuard] \u26d4 CANONICAL PROMPT TAMPERED! System will NOT serve requests.')
+    return false
+  } catch (e: any) {
+    console.error('[IntegrityGuard] Canon module load failed — prompt may be corrupted:', e.message)
+    return false
+  }
+}
+
+// Verify at startup
+// Integrity check moved to main()
+
+// Periodic re-verification (every 5 minutes)
+// Periodic check started in main()
+
 import Fastify, { type FastifyInstance } from 'fastify'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
@@ -25,6 +57,7 @@ import { agentRoutes } from './api/agents.js'
 import { skillRoutes } from './api/skills.js'
 import { mcpRoutes } from './api/mcp.js'
 import { memoryLedgerRoutes } from './api/memory-ledger.js'
+import { memorySystemRoutes } from './api/memory-system.js'
 import { toolTracerRoutes } from './api/tool-tracer.js'
 import { ragRoutes } from './api/rag.js'
 import { otelRoutes } from './api/otel.js'
@@ -38,17 +71,22 @@ import {
   fileRoutes,
   auditRoutes,
   settingsRoutes,
-  systemRoutes,
   workspaceRoutes,
   secretRoutes,
 } from './api/misc.js'
+import { systemRoutes } from './api/system.js'
 import { healthRoutes } from './api/health.js'
+import { cloudRunnerRoutes } from './api/cloud-runner.js'
+import { dashboardRoutes } from './api/dashboard.js'
 import { phase5Routes } from './api/phase5.js'
 import { stripeRoutes } from './api/stripe.js'
 import { metricsRoutes } from './api/metrics.js'
 import { socialRoutes } from './api/social.js'  // Track B · 3 社媒 agent 路由 (2026-06-15)
+import { windowRoutes } from './api/window.js'  // Hermes 对齐: 原生窗口管理
+import { openclawRoutes } from './api/openclaw.js'  // Hermes 对齐: 跨平台协议层
 import { browserRoutes } from './api/browser.js'  // Phase A.3 · Playwright 浏览器自动化 (2026-06-17)
-import { statusRoutes } from './api/status.js'  // D1 · 仿 Hermes SidebarStatusStrip (2026-06-17)
+import { statusRoutes } from './api/status.js'
+import { configRoutes } from './api/config.js'  // D1 · 仿 Hermes SidebarStatusStrip (2026-06-17)
 import { doctorRoutes } from './api/doctor.js'  // D2 · 仿 Hermes doctor (2026-06-17)
 import { providersRoutes } from './api/providers.js'  // D3 · 仿 Hermes providers 插件化 (2026-06-17)
 import { oauthRoutes } from './api/oauth.js'  // D4 · 4 平台 OAuth (微信公众号/飞书/视频号/Shopify, 2026-06-18)
@@ -107,9 +145,16 @@ export async function buildServer(): Promise<FastifyInstance> {
     'application/json',
     { parseAs: 'string' },
     (req, body, done) => {
-      ;(req as unknown as { rawBody: string }).rawBody = body as string
+      const raw = typeof body === 'string' ? body : ''
+      ;(req as unknown as { rawBody: string }).rawBody = raw
+      // 修复：空 body 返回 {} 而不是抛异常（uninstall 等端点不需要 body）
+      const trimmed = raw.trim()
+      if (!trimmed) {
+        done(null, {})
+        return
+      }
       try {
-        done(null, JSON.parse(body as string))
+        done(null, JSON.parse(trimmed))
       } catch (err) {
         done(err as Error, undefined)
       }
@@ -302,6 +347,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(agentRoutes, { prefix: '/api/v1/agents' })
   await app.register(skillRoutes, { prefix: '/api/v1/skills' })
   await app.register(mcpRoutes, { prefix: '/api/v1/mcp' })
+  await app.register(memorySystemRoutes, { prefix: '/api/v1/memory' })
   await app.register(memoryLedgerRoutes, { prefix: '/api/v1/memory-ledger' })
   const { memoryHeartbeatRoutes } = await import('./api/memory-heartbeat.js')
   await app.register(memoryHeartbeatRoutes, { prefix: '/api/v1/memory' })
@@ -326,6 +372,19 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(auditRoutes, { prefix: '/api/v1/audit' })
   await app.register(settingsRoutes, { prefix: '/api/v1/settings' })
   await app.register(systemRoutes, { prefix: '/api/v1/system' })
+
+    // Backup API (manual trigger + list)
+    app.get('/api/v1/backup/list', { preHandler: [app.authenticate] }, async (_req, reply) => {
+      const { listBackups } = await import('./core/auto-backup.js')
+      return reply.send({ backups: listBackups() })
+    })
+    app.post('/api/v1/backup/create', { preHandler: [app.requireAdmin] }, async (_req, reply) => {
+      const { manualBackup } = await import('./core/auto-backup.js')
+      const result = manualBackup()
+      return reply.send(result)
+    })
+    await app.register(cloudRunnerRoutes, { prefix: '/api/v1/cloud' });
+    await app.register(dashboardRoutes, { prefix: '/api/v1/dashboard' });
   await app.register(workspaceRoutes, { prefix: '/api/v1/workspace' })
   await app.register(secretRoutes, { prefix: '/api/v1/secrets' })
 
@@ -364,6 +423,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
   })
   await app.register(socialRoutes, { prefix: '/api/v1/social' })
+  await app.register(windowRoutes, { prefix: '/api/v1' })  // Hermes: 窗口管理
+  await app.register(openclawRoutes, { prefix: '/api/v1' })  // Hermes: OpenCLaw 协议
   // Phase 5 scaffold: /api/v1/auth/sso, /api/v1/marketplace, /api/v1/billing
   await app.register(phase5Routes, { prefix: '/api/v1' })
   // Phase 7.5: Stripe webhook (公开, 不走 rate limit, 内置 rateLimit: false)
@@ -374,9 +435,6 @@ export async function buildServer(): Promise<FastifyInstance> {
   const { automationRoutes } = await import('./api/automations.js')
   await app.register(automationRoutes, { prefix: '/api/v1/automations' })
 
-  // Phase A.2 (2026-06-17): 三层记忆系统
-  const { memoryRoutes } = await import('./api/memory.js')
-  await app.register(memoryRoutes, { prefix: '/api/v1/memory' })
 
   // D4 (2026-06-18): 4 平台 OAuth 路由
   await app.register(oauthRoutes)
@@ -409,6 +467,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   //    - /api/doctor       8 章节结构化检查 + 一键修复
   //    - /api/system/...   重启 gateway / backend
   await app.register(statusRoutes)
+  await app.register(configRoutes)
   await app.register(doctorRoutes)
   await app.register(providersRoutes)
 
@@ -447,6 +506,14 @@ export async function buildServer(): Promise<FastifyInstance> {
 }
 
 async function main() {
+  // ═══ PROMPT INTEGRITY CHECK ═══
+  const INTEGRITY_OK = await verifySystemPromptIntegrity()
+  if (!INTEGRITY_OK) {
+    console.error('[IntegrityGuard] ⛔ CANONICAL PROMPT TAMPERED — refusing to start')
+    process.exit(1)
+  }
+  // Periodic re-verification
+  setInterval(async () => { await verifySystemPromptIntegrity() }, 5 * 60 * 1000)
   // Phase B.1 (2026-06-16) 启动校验: prod 绝不能跑 mock Stripe, 没 secret 也不让起
   if (config.DASHENG_STRIPE_MOCK_MODE) {
     if (config.NODE_ENV === 'production') {
@@ -553,17 +620,54 @@ async function main() {
     )
     app.log.info(`OpenAPI: http://${config.BACKEND_HOST}:${config.BACKEND_PORT}/docs`)
 
+    // v6.1: 完整性守卫 — 启动时验证关键文件，缺失时自动从备份恢复
+    const { runIntegrityCheck, snapshotPersistEnv } = await import('./core/integrity-guard.js')
+    const guardResult = runIntegrityCheck()
+    if (!guardResult.ok) {
+      app.log.error({ blocked: guardResult.blocked }, '关键文件缺失，拒绝启动！请从 backups/ 手动恢复')
+      process.exit(1)
+    }
+    if (guardResult.recovered.length > 0) {
+      app.log.warn({ recovered: guardResult.recovered }, '部分文件已从备份自动恢复')
+    }
+    snapshotPersistEnv()
+
     // Track C.1: 加载定时任务 + MCP 服务器
     const { loadAutomations } = await import('./core/scheduler.js')
     loadAutomations()
 
     // Track C.4: 加载已注册的 MCP 服务器 + 启动心跳
+    // Track C.4: 种子数据 + 路径愈合 (持久化层)
+    const { seedMCPServers } = await import('./core/mcp-seed.js')
+    const seedResult = seedMCPServers()
+
+    // Track C.4b: 自动备份系统 (每6小时快照 DB+.env+prompt+MCP)
+    const { startAutoBackup } = await import('./core/auto-backup.js')
+    startAutoBackup()
+    const { startCloudCleanup } = await import('./core/cloud-runner.js')
+    startCloudCleanup()
+
+    // Secret Broker v6.0: .env → 加密存储迁移
+    const { migrateFromEnv } = await import('./core/secret-broker.js')
+    migrateFromEnv()
+    if (seedResult.inserted.length > 0) app.log.info(seedResult, 'MCP 种子数据已补全')
+    if (seedResult.healed.length > 0) app.log.info(seedResult, 'MCP 路径已愈合')
+
     const { loadMCPServersOnStartup, startMCPHeartbeat } = await import('./core/mcp-client.js')
-    loadMCPServersOnStartup().catch((e: any) => app.log.warn(e, 'MCP 启动加载失败'))
-    // Heartbeat starts after a short delay to let servers initialize
+    const mcpLoaded = await loadMCPServersOnStartup()
+    app.log.info({ loaded: mcpLoaded }, 'MCP 服务器已加载')
+    // Heartbeat starts after MCPs are fully loaded (10s delay for initialization)
     setTimeout(() => startMCPHeartbeat(), 5000)
 
-    // Track C.5: 记忆系统自检心跳
+    // Track C.5: 记忆系统初始化 + 自检心跳
+    const { initMemoryTables, seedMemoryDefaults } = await import('./core/memory-init.js')
+    const memResult = initMemoryTables()
+    app.log.info({ created: memResult.created.length }, '记忆表已初始化')
+    if (memResult.errors.length > 0) {
+      app.log.warn({ errors: memResult.errors }, '部分记忆表创建失败')
+    }
+    seedMemoryDefaults()
+
     const { startMemoryHeartbeat } = await import('./core/memory-heartbeat.js')
     startMemoryHeartbeat()
 

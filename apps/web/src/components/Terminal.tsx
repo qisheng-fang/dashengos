@@ -1,203 +1,177 @@
-// DaShengOS Terminal · xterm.js 流式终端组件
-// WebSocket 连接 PTY 引擎，支持全双工交互
+// DaShengOS Terminal v6.2 — Hermes 对齐 · WebSocket PTY 真实终端
+// 连接 ws://127.0.0.1:8001，使用 node-pty 引擎
 
-import { useEffect, useRef, useCallback } from 'react'
-import { Terminal as XTerm } from 'xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import { WebLinksAddon } from '@xterm/addon-web-links'
-import 'xterm/css/xterm.css'
+import { useState, useRef, useEffect, useCallback } from 'react'
 
-interface TerminalProps {
-  className?: string
-  cwd?: string
-  onReady?: (sessionId: string) => void
-  autoConnect?: boolean
+type Line = { text: string; type?: 'input' | 'output' | 'error' | 'info' | 'system' }
+
+const WELCOME: Line[] = [
+  { text: '╔══════════════════════════════════════════╗', type: 'info' },
+  { text: '║     DaShengOS Terminal · OMNI-BRAIN     ║', type: 'info' },
+  { text: '║     真实 PTY 终端 · 像 Hermes 一样       ║', type: 'info' },
+  { text: '║     ws://127.0.0.1:8001                  ║', type: 'info' },
+  { text: '╚══════════════════════════════════════════╝', type: 'info' },
+  { text: '', type: 'system' },
+]
+
+const LINE_COLORS: Record<string, string> = {
+  'input': 'text-cyan-400 font-semibold',
+  'output': 'text-neutral-200 font-mono text-sm',
+  'error': 'text-red-400 font-mono text-sm',
+  'info': 'text-cyan-400 font-mono text-xs',
+  'system': 'text-neutral-600 font-mono text-xs',
 }
 
-export function Terminal({ className, cwd, onReady, autoConnect = true }: TerminalProps) {
-  const termRef = useRef<HTMLDivElement>(null)
-  const xtermRef = useRef<XTerm | null>(null)
+export function Terminal({ className }: { className?: string }) {
+  const [lines, setLines] = useState<Line[]>(WELCOME)
+  const [input, setInput] = useState('')
+  const [connected, setConnected] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
-  const fitAddonRef = useRef<FitAddon | null>(null)
-  const retryCount = useRef(0)
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const MAX_RETRIES = 5
+  const inputRef = useRef<HTMLInputElement>(null)
+  const outputRef = useRef<HTMLDivElement>(null)
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>()
 
-  // 清理函数
-  const cleanup = useCallback(() => {
-    if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null }
-    retryCount.current = MAX_RETRIES
+  useEffect(() => { inputRef.current?.focus() }, [])
+  useEffect(() => { if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight }, [lines])
+
+  const addLine = useCallback((text: string, type?: Line['type']) => {
+    setLines(prev => [...prev, { text, type }])
+  }, [])
+
+  // 连接 PTY WebSocket
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return
+
+    addLine('连接终端...', 'system')
+    const ws = new WebSocket('ws://127.0.0.1:8001')
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      setConnected(true)
+      addLine('[已连接] PTY 终端就绪', 'info')
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data)
+        if (msg.type === 'session') {
+          setSessionId(msg.sessionId)
+        } else if (msg.type === 'data') {
+          // PTY 输出按行分割
+          const text = msg.data as string
+          if (text.includes('\n')) {
+            text.split('\n').filter(Boolean).forEach(l => addLine(l, 'output'))
+          } else if (text.trim()) {
+            addLine(text, 'output')
+          }
+        } else if (msg.type === 'exit') {
+          addLine(`[进程退出, exit code: ${msg.exitCode}]`, 'system')
+        }
+      } catch {
+        // 非 JSON 消息，直接输出
+        addLine(event.data, 'output')
+      }
+    }
+
+    ws.onclose = () => {
+      setConnected(false)
+      addLine('[连接断开] 3秒后自动重连...', 'error')
+      reconnectTimer.current = setTimeout(connect, 3000)
+    }
+
+    ws.onerror = () => {
+      addLine('[连接失败] 终端服务 :8001 不可达', 'error')
+    }
+  }, [addLine])
+
+  // 断开
+  const disconnect = useCallback(() => {
+    if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
     wsRef.current?.close()
     wsRef.current = null
+    setConnected(false)
+    setSessionId(null)
   }, [])
 
-  // 连接 WebSocket
-  const doConnect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
-    if (retryCount.current >= MAX_RETRIES) {
-      xtermRef.current?.writeln('\r\n\x1b[91m[无法连接，请检查后端 :8000]\x1b[0m')
+  // 挂载时连接，卸载时断开
+  useEffect(() => {
+    connect()
+    return () => disconnect()
+  }, [])
+
+  // 发送输入
+  const sendInput = useCallback((data: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      addLine('终端未连接', 'error')
       return
     }
+    wsRef.current.send(JSON.stringify({ type: 'input', data }))
+  }, [addLine])
 
-    const label = retryCount.current > 0
-      ? `\r\n\x1b[93m[重连 ${retryCount.current}/${MAX_RETRIES}...]\x1b[0m`
-      : '\r\n\x1b[36m[连接中...]\x1b[0m'
-    xtermRef.current?.writeln(label)
-
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${proto}//${location.hostname}:8000/api/v1/terminal`
-    let token = ''
-    try {
-      const raw = localStorage.getItem('dasheng-auth')
-      if (raw) token = JSON.parse(raw)?.state?.accessToken || ''
-    } catch {}
-
-    try {
-      const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`)
-      wsRef.current = ws
-
-      ws.onopen = () => {
-        retryCount.current = 0
-        xtermRef.current?.writeln('\r\n\x1b[32m[已连接]\x1b[0m')
-      }
-
-      ws.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data)
-          if (msg.type === 'session') onReady?.(msg.sessionId)
-          else if (msg.type === 'data') xtermRef.current?.write(msg.data)
-          else if (msg.type === 'exit') xtermRef.current?.writeln(`\r\n\x1b[93m[exit ${msg.exitCode}]\x1b[0m`)
-        } catch {}
-      }
-
-      ws.onclose = () => {
-        wsRef.current = null
-        if (retryCount.current < MAX_RETRIES) {
-          retryCount.current++
-          xtermRef.current?.writeln(`\r\n\x1b[91m[断开]\x1b[0m \x1b[93m3s后重连...\x1b[0m`)
-          retryTimer.current = setTimeout(() => doConnect(), 3000)
-        } else {
-          xtermRef.current?.writeln('\r\n\x1b[91m[连接失败]\x1b[0m')
-        }
-      }
-
-      ws.onerror = () => { wsRef.current = null }
-    } catch {
-      xtermRef.current?.writeln('\r\n\x1b[91m[创建连接失败]\x1b[0m')
+  // 处理回车
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && input.trim()) {
+      const cmd = input.trim()
+      addLine('$ ' + cmd, 'input')
+      sendInput(cmd + '\n')
+      setInput('')
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      // TODO: command history
+    } else if (e.key === 'c' && (e.metaKey || e.ctrlKey)) {
+      sendInput('\x03') // Ctrl+C
     }
-  }, [onReady])
-
-  // 初始化 xterm (只执行一次)
-  useEffect(() => {
-    if (!termRef.current || xtermRef.current) return
-
-    const term = new XTerm({
-      cursorBlink: true, cursorStyle: 'bar', fontSize: 14,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-      theme: {
-        background: '#0a0a0f', foreground: '#f0f0f0', cursor: '#0df0ff',
-        selectionBackground: '#1a3a5c',
-        black: '#1a1a2e', red: '#ff6b6b', green: '#00ff88', yellow: '#ffd93d',
-        blue: '#6c9fff', magenta: '#c084fc', cyan: '#22d3ee', white: '#e0e0e0',
-        brightBlack: '#3a3a5e', brightRed: '#ff8e8e', brightGreen: '#5fffaf',
-        brightYellow: '#ffe66d', brightBlue: '#8cb4ff', brightMagenta: '#d4a0ff',
-        brightCyan: '#67e8f9', brightWhite: '#ffffff',
-      },
-      allowProposedApi: true, scrollback: 5000,
-    })
-
-    const fitAddon = new FitAddon()
-    term.loadAddon(fitAddon)
-    term.loadAddon(new WebLinksAddon())
-    term.open(termRef.current)
-    fitAddon.fit()
-    xtermRef.current = term
-    fitAddonRef.current = fitAddon
-
-    term.onData((data) => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'input', data }))
-      }
-    })
-
-    const onResize = () => {
-      fitAddon.fit()
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      }
-    }
-    window.addEventListener('resize', onResize)
-    term.onResize(() => onResize())
-
-    if (autoConnect) doConnect()
-
-    return () => {
-      window.removeEventListener('resize', onResize)
-      cleanup()
-      term.dispose()
-      xtermRef.current = null
-    }
-  }, []) // 空依赖 — 只初始化一次
+  }
 
   return (
-    <div className={className} style={{ width: '100%', height: '100%', minHeight: '300px' }}>
-      <div ref={termRef} style={{ width: '100%', height: '100%' }} />
+    <div className={`flex flex-col h-full bg-neutral-950 ${className || ''}`}>
+      {/* 状态栏 */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-neutral-900 border-b border-neutral-800 flex-shrink-0">
+        <span className="text-[10px] text-neutral-500 flex items-center gap-2">
+          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-400'}`} />
+          {connected ? 'PTY 已连接' : '未连接'}
+          {sessionId && <span className="text-neutral-700">| {sessionId.slice(0, 8)}</span>}
+        </span>
+        <div className="flex gap-2">
+          {!connected ? (
+            <button onClick={connect} className="text-[10px] text-cyan-400 hover:text-cyan-300">连接</button>
+          ) : (
+            <button onClick={disconnect} className="text-[10px] text-neutral-600 hover:text-neutral-400">断开</button>
+          )}
+          <button onClick={() => setLines(WELCOME)} className="text-[10px] text-neutral-600 hover:text-neutral-400">清屏</button>
+        </div>
+      </div>
+
+      {/* 输出区域 */}
+      <div ref={outputRef} className="flex-1 overflow-y-auto p-3 font-mono text-sm scrollbar-thin">
+        {lines.map((line, i) => (
+          <div key={i} className={`whitespace-pre-wrap break-all leading-5 ${LINE_COLORS[line.type || 'output'] || 'text-neutral-300'}`}>
+            {line.text}
+          </div>
+        ))}
+      </div>
+
+      {/* 输入行 */}
+      <div className="flex items-center px-3 py-2 bg-neutral-900 border-t border-neutral-800 flex-shrink-0">
+        <span className="text-cyan-400 font-mono text-sm mr-2 flex-shrink-0">$</span>
+        <input
+          ref={inputRef}
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={!connected}
+          placeholder={connected ? '输入命令...' : '终端未连接...'}
+          className="flex-1 bg-transparent text-neutral-200 font-mono text-sm outline-none placeholder:text-neutral-700"
+          autoFocus
+        />
+        {!connected && (
+          <button onClick={connect} className="text-xs text-cyan-400 hover:text-cyan-300 ml-2 px-2 py-0.5 rounded border border-cyan-400/30">
+            重连
+          </button>
+        )}
+      </div>
     </div>
   )
 }
-
-// ─── 内联终端// ─── 内联终端 (轻量版，用于 Chat 中显示命令执行) ───
-
-interface InlineTerminalProps {
-  output: string
-  isRunning: boolean
-  className?: string
-}
-
-export function InlineTerminal({ output, isRunning, className }: InlineTerminalProps) {
-  const termRef = useRef<HTMLDivElement>(null)
-  const xtermRef = useRef<XTerm | null>(null)
-
-  useEffect(() => {
-    if (!termRef.current || xtermRef.current) return
-
-    const term = new XTerm({
-      cursorBlink: false,
-      disableStdin: true,
-      fontSize: 12,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-      theme: {
-        background: '#050510',
-        foreground: '#c0c0c0',
-      },
-      rows: 20,
-      scrollback: 1000,
-    })
-
-    term.open(termRef.current)
-    xtermRef.current = term
-
-    return () => {
-      term.dispose()
-      xtermRef.current = null
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!xtermRef.current) return
-    // 清除并重写输出
-    xtermRef.current.clear()
-    xtermRef.current.write(output.replace(/\n/g, '\r\n'))
-    if (isRunning) {
-      xtermRef.current.write('\r\n\x1b[33m⏳ 执行中...\x1b[0m')
-    }
-  }, [output, isRunning])
-
-  return (
-    <div className={className} style={{ width: '100%', minHeight: '200px' }}>
-      <div ref={termRef} style={{ width: '100%' }} />
-    </div>
-  )
-}
-
-export default Terminal

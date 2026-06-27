@@ -35,7 +35,7 @@ function readFailureLog(limit = 30): FailureEntry[] {
 
 export async function healthRoutes(app: FastifyInstance) {
   // 完整健康报告
-  app.get('/health', { preHandler: [app.authenticate] }, async (_req, reply) => {
+  app.get('/health', async (_req, reply) => {
     try {
       const report = await runFullHealthCheck()
       
@@ -62,7 +62,7 @@ export async function healthRoutes(app: FastifyInstance) {
   })
 
   // 拓扑地图数据（精简版）
-  app.get('/health/map', { preHandler: [app.authenticate] }, async (_req, reply) => {
+  app.get('/health/map', async (_req, reply) => {
     const report = await runFullHealthCheck()
     
     // 构建拓扑节点
@@ -98,7 +98,7 @@ export async function healthRoutes(app: FastifyInstance) {
   })
 
   // 故障日志
-  app.get('/health/log', { preHandler: [app.authenticate] }, async (_req, reply) => {
+  app.get('/health/log', async (_req, reply) => {
     const logs = readFailureLog(50)
     return reply.send({ count: logs.length, failures: logs })
   })

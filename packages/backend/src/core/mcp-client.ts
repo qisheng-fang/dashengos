@@ -121,7 +121,7 @@ class MCPStdioClient {
     })
   }
 
-  async initialize(): Promise<{ protocolVersion: string; serverInfo: any; capabilities: any }> {
+  async initialize(timeoutMs: number = 15000): Promise<{ protocolVersion: string; serverInfo: any; capabilities: any }> {
     const result = await this.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
@@ -159,15 +159,22 @@ export async function startMCPServer(config: MCPServerConfig): Promise<{
   tools: MCPTool[]
   error?: string
 }> {
-  // Already running?
-  if (activeServers.has(config.id)) {
-    return { success: true, tools: activeServers.get(config.id)!.tools }
+  // Already running? Verify liveness
+  const existing = activeServers.get(config.id)
+  if (existing) {
+    const alive = existing.process.exitCode === null && !existing.process.killed
+    if (alive) {
+      return { success: true, tools: existing.tools }
+    }
+    // Dead entry — clean up and restart
+    console.log('[MCP] Stale entry for ' + config.id + ', restarting')
+    activeServers.delete(config.id)
   }
 
   let client: MCPStdioClient
   try {
     client = new MCPStdioClient(config.command, config.args, config.env)
-    const initResult = await client.initialize()
+    const initResult = await client.initialize(60000)
     console.log(`[MCP] ${config.name} connected — protocol ${initResult.protocolVersion}`)
 
     const tools = await client.listTools()
@@ -239,7 +246,7 @@ export async function stopMCPServer(serverId: string): Promise<boolean> {
 export async function loadMCPServersOnStartup(): Promise<number> {
   try {
     const servers = sqlite.prepare(
-      `SELECT id, name, command, args_json, env_json FROM mcp_servers WHERE status != 'STOPPED'`
+      `SELECT id, name, command, args_json, env_json FROM mcp_servers WHERE enabled = 1 AND status != 'STOPPED'`
     ).all() as Array<{ id: string; name: string; command: string; args_json: string; env_json: string | null }>
 
     let loaded = 0
@@ -476,8 +483,18 @@ export function startMCPHeartbeat(): void {
       try {
         await server.client.request('ping', {}, 5000)
         failureCount.delete(id)  // reset on success
+        // 更新 DB: 健康检查通过
+        try {
+          
+          sqlite.prepare("UPDATE mcp_servers SET status = 'STARTED', last_health_check = ? WHERE id = ?").run(Date.now(), id)
+        } catch {}
       } catch {
         console.log(`[MCP] Heartbeat ping failed: ${id}`)
+        // 更新 DB 状态为 DEGRADED
+        try {
+          
+          sqlite.prepare("UPDATE mcp_servers SET status = 'ERRORED', last_health_check = ? WHERE id = ?").run(Date.now(), id)
+        } catch {}
         recordMCPFailure(id)
       }
     }

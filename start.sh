@@ -10,6 +10,13 @@ lsof -ti :8000 :3000 2>/dev/null | xargs kill -9 2>/dev/null || true
 screen -wipe 2>/dev/null || true
 sleep 1
 
+# 沙箱守护进程（工具执行必需）
+echo "→ 沙箱守护进程"
+screen -S dasheng-sandbox -X quit 2>/dev/null || true
+sleep 0.5
+screen -dmS dasheng-sandbox ./sandbox/bin/sandbox --socket /tmp/dasheng/sandbox.sock
+sleep 1
+
 # 后端
 echo "→ 后端 :8000"
 screen -dmS dasheng-backend ./node_modules/.bin/tsx packages/backend/src/server.ts
@@ -17,7 +24,9 @@ screen -dmS dasheng-backend ./node_modules/.bin/tsx packages/backend/src/server.
 # 前端
 echo "→ 前端 :3000"
 cd apps/web
-screen -dmS dasheng-frontend npx vite --host 127.0.0.1 --port 3000
+# 前端 Vite dev server (即时编译 + HMR) — launchd 管理
+launchctl unload ~/Library/LaunchAgents/com.dasheng.frontend.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/com.dasheng.frontend.plist 2>/dev/null || true
 cd "$ROOT"
 
 # 等就绪

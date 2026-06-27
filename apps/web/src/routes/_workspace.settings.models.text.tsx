@@ -6,7 +6,6 @@
 //   - GET /api/v1/settings (读 text.chain)
 //   - PUT /api/v1/settings/models/text (存)
 
-import { createFileRoute } from '@tanstack/react-router'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -38,10 +37,6 @@ const TEXT_MODEL_CATALOG: Omit<TextModel, 'available'>[] = [
 function providerFromModelId(modelId: string): string {
   return modelId.split(':')[0] ?? 'unknown'
 }
-
-export const Route = createFileRoute('/_workspace/settings/models/text')({
-  component: TextModelsPage,
-})
 
 export function TextModelsPage() {
   const [models, setModels] = useState<TextModel[]>([])

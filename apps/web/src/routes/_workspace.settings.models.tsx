@@ -2,7 +2,6 @@
 // 模型路由父路由: 3-tab 切换 (文本 / 多模态 / 厂商) + Outlet 渲染子路由
 // 跟 5 份 .md 规划文档 (创作台方案 §2.5 "升级方案 C: UI 拆三页") 一致
 
-import { createFileRoute, Link, Outlet, useLocation } from '@tanstack/react-router'
 import { Cpu, Image as ImageIcon, Building2, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -12,10 +11,6 @@ const SUB_TABS = [
   { to: '/settings/models/provider', label: '厂商管理', icon: Building2, desc: 'DeepSeek / SiliconFlow / OpenAI / Anthropic / Ollama 凭证 + 健康' },
   { to: '/settings/models/custom', label: '自定义模型', icon: Wrench, desc: '添加任意第三方模型 + 自定义 API 端点' },
 ]
-
-export const Route = createFileRoute('/_workspace/settings/models')({
-  component: ModelsLayout,
-})
 
 export function ModelsLayout() {
   const location = useLocation()

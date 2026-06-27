@@ -1,10 +1,5 @@
-// DaShengOS Terminal Route
-import { createFileRoute } from '@tanstack/react-router'
-import { Terminal } from '@/components/Terminal'
-
-export const Route = createFileRoute('/_workspace/terminal')({
-  component: TerminalPage,
-})
+// DaShengOS Terminal Route — xterm.js 真实终端
+import { XTermTerminal } from '@/components/XTermTerminal'
 
 export function TerminalPage() {
   return (
@@ -15,7 +10,7 @@ export function TerminalPage() {
         <span className="text-xs text-neutral-500 ml-auto">DaShengOS Terminal · bash/zsh</span>
       </div>
       <div className="flex-1 p-2">
-        <Terminal className="h-full rounded-lg overflow-hidden border border-neutral-800" />
+        <XTermTerminal className="h-full rounded-lg overflow-hidden border border-neutral-800" />
       </div>
     </div>
   )

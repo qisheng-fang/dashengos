@@ -26,7 +26,6 @@ export async function resolvePreview(req: PreviewRequest): Promise<PreviewRespon
     if (req.type === 'ima_kb_item' && req.mediaId) {
       // 调用 Python ima_api 获取 media info
       const script = `
-from deerflow.ima_api import get_media_info, get_doc_content
 import json, sys
 
 info = get_media_info('${req.mediaId}')
@@ -58,7 +57,6 @@ print(json.dumps(result, ensure_ascii=False))
 
     if (req.type === 'ima_note' && req.noteId) {
       const script = `
-from deerflow.ima_api import get_doc_content
 import json, sys
 
 doc = get_doc_content('${req.noteId}')

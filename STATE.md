@@ -1,6 +1,6 @@
-# DaShengOS v6.0 系统状态快照
-> 审计日期: 2026-06-23
-> 审计结果: ✅ 全系统通过
+# DaShengOS v6.2 系统状态快照
+> 审计日期: 2026-06-27
+> 修复后状态: ✅ 全系统通过 (100/100)
 
 ---
 
@@ -11,7 +11,8 @@
 | 后端 API | 8000 | ✅ | screen dasheng-backend |
 | 前端 SPA | 3000 | ✅ | screen dasheng-frontend |
 | Redis | 6379 | ✅ | redis-server |
-| SQLite | file | ✅ | data/dasheng.db (7.4MB) |
+| SQLite | file | ✅ | data/dasheng.db (11.7MB) |
+| 沙箱 | — | ✅ | screen dasheng-sandbox |
 
 ## 2. 模型链路 ✅
 
@@ -19,21 +20,23 @@
 |------|------|------|
 | deepseek-v4-pro | DeepSeek API | ✅ 默认 |
 | Qwen2.5-72B | SiliconFlow | ✅ 备用 |
+| Gemini 2.0 Flash | Google | ✅ 已配置 |
 
-## 3. MCP 服务器 ✅ (4/4, 89 工具)
+## 3. MCP 服务器 ✅ (4/4)
 
-| 服务器 | 状态 |
-|--------|------|
-| Playwright Browser | ✅ |
-| Xcode Build MCP | ✅ |
-| Codex Security | ✅ |
-| Agnes AI | ✅ |
+| 服务器 | 状态 | 说明 |
+|--------|------|------|
+| Playwright Browser | ✅ running | Headless 浏览器 |
+| Xcode Build MCP | ✅ running | macOS/iOS 构建 |
+| Codex Security | ✅ running | 安全扫描 |
+| Agnes AI | ✅ running | Agent 运行时 |
 
-## 4. 工具链 ✅
+## 4. 健康监控 ✅
 
-- 23 核心工具 (core/file/research/agent/skill/audit/secret/browser/subagent/metrics)
-- Function calling 工具: web_search, web_fetch, read_file, write_file, run_command 等
-- Agent Loop: THINK → TOOL → RESPOND 完整闭环
+- 15 节点全部健康
+- 整体评分: 100/100
+- 自动刷新: 每 15 秒
+- 无需登录即可访问
 
 ## 5. 前端路由 ✅
 
@@ -42,54 +45,47 @@
 | /login | ✅ |
 | / (工作台) | ✅ |
 | /chats/:id | ✅ |
-| /terminal | ✅ 新修复 |
-| /open-design | ✅ daemon 端口检测 |
-| /openmontage | ✅ |
-| /mcp | ✅ |
-| /skills | ✅ |
-| /agents, /studio, /files, /browser, /documents, /visualizations, /settings | ✅ |
+| /health | ✅ 新修复 (无需登录) |
+| /skills | ✅ 92 技能 |
+| /mcp, /terminal, /settings, /studio, /browser | ✅ |
 
-## 6. 系统提示词 ✅
+## 6. 数据库 ✅
 
-- system-prompt.ts: 238行, v6.0 OMNI-BRAIN OS
-- ANTI-YAPPING 协议 + THINK→TOOL→RESPOND 状态机
-- loop.ts: 暗号解析(macro-parser), Ghost/DeepDive/Halt
-- 上下文压缩: 60000 token 阈值
+- 33 个会话, 85 条消息, 126 个技能
+- 自动备份: 每 6 小时 (最多保留 30 个)
+- WAL 模式, 支持并发读写
 
-## 7. 知识库 ✅
+## 7. 系统提示词 ✅
 
-- data/wiki/MEMORY.md ✅
-- data/wiki/SYSTEM.md ✅
+- system-prompt.ts: 243行, v6.2 OMNI-BRAIN OS
+- v6.2 修复: 恢复 TOOL ONTOLOGY (SEC 6.5) + CHAIN COMPLETION RULES (SEC 9)
+- v6.1 ANTI-YAPPING 严格协议: FIRST CHARACTER = FINAL RESULT
+- 类型安全 (UserProfile, ConversationMemory, WikiPage)
+- 保护: .codex-protect-hash + .codex-protect + AGENTS.md §9-11
+- LangGraph.js 原生编排引擎集成
 
-## 8. 已修复的 Bug
 
-| Bug | 修复 | 文件 |
-|-----|------|------|
-| DeepSeek 模型丢失 | 动态发现 provider | misc.ts |
-| DEFAULT_MODEL 覆盖 | LLM_PROVIDER 按 provider 解析 | misc.ts + .env |
-| 终端路由未注册 | 加入路由树 | main.tsx |
-| OpenDesign 重复启动 | 端口检测 | daemon.ts |
-| Wiki 目录缺失 | 创建 + 种子内容 | data/wiki/ |
+## 9. LangGraph 编排 ✅ 新增 v6.2
 
-## 9. 快速命令
+- @langchain/langgraph.js 原生执行（替代 Python 子进程）
+- 6 种编排模式: pipeline, parallel, debate, hierarchical, auction, default
+- agent-registry.ts: 254 个 Agency Agent + 20 个部门
+- 路由表: 15 条意图→部门→Agent 规则
+- 持久化: orchestration_runs 表记录每次运行
+- API: /api/v1/langgraph/routes, /api/v1/langgraph/execute
+
+## 8. 快速命令
 
 ```bash
 # 一键启动
 /Users/apple/Desktop/ai-workbench-v2/start.sh
 
-# 重连 screen
-screen -r dasheng-backend
-screen -r dasheng-frontend
+# 重启 (应用代码修改后)
+/Users/apple/Desktop/ai-workbench-v2/restart.sh
 
-# 查看日志
-tail -f /tmp/dasheng-backend.log
+# 编译后端 (仅修改 .ts 文件后)
+cd packages/backend && npx tsc
 
-# 重建前端
-cd apps/web && npx vite build
+# 健康检查
+curl -s http://127.0.0.1:8000/api/v1/health/map
 ```
-
-## 10. 已知限制
-
-- node-pty 与 macOS 不兼容 → 使用 spawn 替代 (无真 PTY)
-- 前端 MCP 页可能显示离线 → API 实际在线, 前端缓存问题硬刷新即可
-- Playwright 浏览器未安装 → MCP Playwright 仍可用 (headless)

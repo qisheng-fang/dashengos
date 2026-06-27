@@ -59,19 +59,72 @@ function hashToken(token: string): number {
   return Math.abs(h) % VEC_DIM
 }
 
+// ═══ 真实 Embedding (SiliconFlow BAAI/bge-large-zh-v1.5) ═══
+// 回退: 本地 hash-bow (当 API 不可用时)
+let _embeddingCache: Map<string, number[]> | null = null
+function getEmbeddingCache(): Map<string, number[]> {
+  if (!_embeddingCache) _embeddingCache = new Map()
+  return _embeddingCache
+}
+
+async function fetchEmbedding(text: string): Promise<number[] | null> {
+  const apiKey = process.env.SILICONFLOW_API_KEY
+  const baseUrl = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1'
+  if (!apiKey) return null
+  
+  try {
+    const resp = await fetch(`${baseUrl}/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: 'BAAI/bge-large-zh-v1.5', input: text.slice(0, 512) }),
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!resp.ok) return null
+    const data = await resp.json() as { data: Array<{ embedding: number[] }> }
+    const emb = data.data?.[0]?.embedding
+    if (emb && emb.length > 0) return emb
+  } catch { /* API unavailable, fallback */ }
+  return null
+}
+
+// 同步包装: 首次调用触发异步获取, 后续从缓存读取
+const _pendingEmbeddings = new Map<string, Promise<number[] | null>>()
+
 export function embedText(text: string): number[] {
+  const cache = getEmbeddingCache()
+  const key = text.slice(0, 100)
+  
+  // 缓存命中
+  const cached = cache.get(key)
+  if (cached) return cached
+  
+  // 正在获取中
+  const pending = _pendingEmbeddings.get(key)
+  if (pending) {
+    // 返回 hash 回退, 异步结果会更新缓存
+    const fallback = hashEmbed(text)
+    return fallback
+  }
+  
+  // 首次: 触发异步获取 + 同步返回 hash 回退
+  const promise = fetchEmbedding(text).then(emb => {
+    if (emb) cache.set(key, emb)
+    _pendingEmbeddings.delete(key)
+    return emb
+  })
+  _pendingEmbeddings.set(key, promise)
+  
+  return hashEmbed(text)
+}
+
+// ─── Hash-BoW 回退 ─────────────────────────────────────
+function hashEmbed(text: string): number[] {
   const vec = new Array(VEC_DIM).fill(0)
   const tokens = tokenize(text)
   if (tokens.length === 0) return vec
-  
-  for (const token of tokens) {
-    vec[hashToken(token)] += 1
-  }
-  
-  // L2 normalize
+  for (const token of tokens) vec[hashToken(token)] += 1
   const mag = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0))
   if (mag > 0) for (let i = 0; i < VEC_DIM; i++) vec[i] /= mag
-  
   return vec
 }
 

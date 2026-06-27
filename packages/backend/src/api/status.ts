@@ -10,7 +10,7 @@ const PYTHON = '/Users/apple/Desktop/ai-workbench-v2/agent/.venv/bin/python3'
 
 function checkPort(port: number): { running: boolean; pid?: number } {
   try {
-    const out = execSync(`lsof -ti:${port}`, { stdio: 'pipe', timeout: 3000 }).toString().trim()
+    const out = execSync(`lsof -ti:${port} 2>/dev/null || /usr/sbin/lsof -ti:${port} 2>/dev/null`, { stdio: 'pipe', timeout: 5000, shell: '/bin/bash' }).toString().trim()
     if (!out) return { running: false }
     const pid = parseInt(out.split('\n')[0] || '0', 10)
     return { running: true, pid }
@@ -21,7 +21,15 @@ function checkSocket(path: string): { running: boolean; age_sec?: number } {
   try {
     if (!existsSync(path)) return { running: false }
     const stat = statSync(path)
-    return { running: true, age_sec: Math.floor((Date.now() - stat.mtimeMs) / 1000) }
+    // 真实连接测试: 尝试 connect() 确认进程在监听
+    try {
+      const sock = new (require('net').Socket)()
+      sock.connect({ path })
+      sock.destroy()
+      return { running: true, age_sec: Math.floor((Date.now() - stat.mtimeMs) / 1000) }
+    } catch {
+      return { running: false }
+    }
   } catch { return { running: false } }
 }
 
@@ -42,26 +50,50 @@ export async function statusRoutes(app: FastifyInstance) {
   // 核心状态端点 - 仿 Hermes GET /api/status
   app.get('/api/status', async () => {
     const providers = {
+      openai: {
+        configured: !!process.env.OPENAI_API_KEY,
+        model: process.env.OPENAI_DEFAULT_MODEL || 'gpt-4o',
+        base_url: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+      },
+      anthropic: {
+        configured: !!process.env.ANTHROPIC_API_KEY,
+        model: process.env.ANTHROPIC_DEFAULT_MODEL || 'claude-sonnet-4-20250514',
+        base_url: process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
+      },
+      qwen: {
+        configured: !!process.env.DASHSCOPE_API_KEY,
+        model: process.env.QWEN_DEFAULT_MODEL || 'qwen-max',
+        base_url: process.env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      },
+      deepseek: {
+        configured: !!process.env.DEEPSEEK_API_KEY,
+        model: process.env.DEEPSEEK_DEFAULT_MODEL || 'deepseek-chat',
+        base_url: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
+      },
       siliconflow: {
         configured: !!process.env.SILICONFLOW_API_KEY,
         model: process.env.SILICONFLOW_DEFAULT_MODEL || 'Qwen/Qwen2.5-72B-Instruct',
         base_url: process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1',
-      },
-      deepseek: {
-        configured: !!process.env.DEEPSEEK_API_KEY,
-        model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-        base_url: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
       },
       ollama: {
         configured: !!process.env.OLLAMA_HOST,
         model: process.env.DEFAULT_MODEL || 'qwen2.5:7b',
         base_url: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
       },
+      groq: {
+        configured: !!process.env.GROQ_API_KEY,
+        model: process.env.GROQ_DEFAULT_MODEL || 'llama-3.3-70b-versatile',
+        base_url: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
+      },
+      google: {
+        configured: !!process.env.GOOGLE_API_KEY,
+        model: process.env.GOOGLE_DEFAULT_MODEL || 'gemini-2.5-flash',
+        base_url: process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
+      },
     }
 
     const fastify = checkPort(8000)
     const vite = checkPort(3000)
-    const gateway = checkSocket('/tmp/dasheng/deerflow.sock')
 
     return {
       version: '0.3.0',
@@ -75,17 +107,10 @@ export async function statusRoutes(app: FastifyInstance) {
         pid: fastify.pid,
       },
 
-      gateway: {
-        running: gateway.running,
-        state: gateway.running ? 'running' : 'stopped',
-        socket: '/tmp/dasheng/deerflow.sock',
-        age_sec: gateway.age_sec,
-      },
 
       services: {
         fastify: { running: fastify.running, port: 8000, pid: fastify.pid },
         vite: { running: vite.running, port: 3000, pid: vite.pid },
-        deerflow: { running: gateway.running, socket: '/tmp/dasheng/deerflow.sock' },
       },
 
       providers,
@@ -117,31 +142,6 @@ export async function statusRoutes(app: FastifyInstance) {
         socket_dir: '/tmp/dasheng',
         socket_dir_writable: existsSync('/tmp/dasheng'),
       },
-    }
-  })
-
-  // 重启 DeerFlow daemon
-  app.post('/api/system/restart-gateway', async () => {
-    try {
-      // 杀旧进程
-      try { execSync('pkill -f "deerflow.daemon" || true', { stdio: 'ignore' }) } catch {}
-      await new Promise(r => setTimeout(r, 1500))
-
-      // 启动新进程
-      const { spawn } = await import('node:child_process')
-      const { openSync } = await import('node:fs')
-      const logFd = openSync('/tmp/dasheng/deerflow.log', 'a')
-      const child = spawn(PYTHON, ['-m', 'deerflow.daemon'], {
-        cwd: '/Users/apple/Desktop/ai-workbench-v2',
-        detached: true,
-        stdio: ['ignore', logFd, logFd],
-        env: { ...process.env, DEERFLOW_TRACE_SYNC_ENABLED: 'false' },
-      })
-      child.unref()
-
-      return { ok: true, message: 'DeerFlow daemon 重启中,3 秒后状态会更新' }
-    } catch (e: any) {
-      return { ok: false, error: e.message }
     }
   })
 

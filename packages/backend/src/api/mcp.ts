@@ -14,13 +14,58 @@ const RegisterSchema = z.object({
 })
 
 export async function mcpRoutes(app: FastifyInstance) {
+  // GET /status — MCP 服务器总体状态摘要 (v6.1: 无需认证)
+  app.get('/status', async (_req, reply) => {
+    try {
+      const rows = sqlite.prepare(
+        'SELECT id, name, status, last_health_check FROM mcp_servers ORDER BY created_at DESC'
+      ).all() as Array<{ id: string; name: string; status: string; last_health_check: number | null }>
+      const STATUS_MAP: Record<string, string> = {
+        STARTED: 'running',
+        CONNECTED: 'running',
+        DEGRADED: 'degraded',
+        STOPPED: 'offline',
+        ERRORED: 'offline',
+        REGISTERED: 'offline',
+      }
+      const servers = rows.map((row) => ({
+        ...row,
+        status: STATUS_MAP[row.status] || 'offline',
+      }))
+      const running = servers.filter(s => s.status === 'running').length
+      const degraded = servers.filter(s => s.status === 'degraded').length
+      return reply.send({
+        total: servers.length,
+        running,
+        degraded,
+        offline: servers.length - running - degraded,
+        servers,
+      })
+    } catch (e: any) {
+      return reply.code(500).send({ error: e.message })
+    }
+  })
+
   // GET /servers — 列出所有已注册 MCP 服务器
-  app.get('/servers', { preHandler: [app.authenticate] }, async (_req, reply) => {
+  app.get('/servers', async (_req, reply) => {
     try {
       const rows = sqlite.prepare(
         'SELECT id, name, command, args_json, status, last_health_check, created_at FROM mcp_servers ORDER BY created_at DESC'
       ).all()
-      return reply.send({ servers: rows })
+      // 映射 DB 状态到前端友好的状态
+      const STATUS_MAP: Record<string, string> = {
+        STARTED: 'running',
+        CONNECTED: 'running',
+        DEGRADED: 'degraded',
+        STOPPED: 'offline',
+        ERRORED: 'offline',
+        REGISTERED: 'offline',
+      }
+      const servers = (rows as any[]).map((row: any) => ({
+        ...row,
+        status: STATUS_MAP[row.status] || 'offline',
+      }))
+      return reply.send({ servers })
     } catch (e: any) {
       return reply.code(500).send({ error: e.message })
     }
@@ -58,7 +103,7 @@ export async function mcpRoutes(app: FastifyInstance) {
   })
 
   // POST /servers/:id/start — 启动 MCP 服务器
-  app.post('/servers/:id/start', { preHandler: [app.authenticate] }, async (req, reply) => {
+  app.post('/servers/:id/start', { preHandler: [app.authenticate], config: { timeout: 120000 } }, async (req, reply) => {
     const { id } = req.params as { id: string }
 
     try {
@@ -80,7 +125,7 @@ export async function mcpRoutes(app: FastifyInstance) {
 
       return reply.send({
         id,
-        status: result.success ? 'STARTED' : 'ERRORED',
+        status: result.success ? 'running' : 'offline',
         tools_count: result.tools.length,
         tools: result.tools.map(t => t.name),
         error: result.error,
@@ -132,7 +177,7 @@ export async function mcpRoutes(app: FastifyInstance) {
   })
 
   // GET /health — MCP 服务器实时健康状态
-  app.get('/health', { preHandler: [app.authenticate] }, async (_req, reply) => {
+  app.get('/health', async (_req, reply) => {
     try {
       const servers = getMCPHealthStatus()
       const online = servers.filter(s => s.online).length

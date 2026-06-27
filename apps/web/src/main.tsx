@@ -36,6 +36,10 @@ import { TextModelsPage } from '@/routes/_workspace.settings.models.text'
 import { MultimodalModelsPage } from '@/routes/_workspace.settings.models.multimodal'
 import { ProviderPage } from '@/routes/_workspace.settings.models.provider'
 import { CustomModelManager } from '@/screens/CustomModelManager'  // 自定义模型管理页 (2026-06-19)
+import { Agents } from '@/screens/Agents'
+import { Documents } from '@/screens/Documents'
+import { TeamDashboard } from '@/screens/TeamDashboard'
+import { Visualizations } from '@/screens/Visualizations'
 import { AgentTARS } from "@/screens/AgentTARS"
 import { AstrBot } from "@/screens/AstrBot"
 import { LangGraph } from "@/screens/LangGraph"
@@ -76,10 +80,11 @@ const wsAstrBot = createRoute({ getParentRoute: () => wsLayout, path: "/astrbot"
 const wsLangGraph = createRoute({ getParentRoute: () => wsLayout, path: "/langgraph", component: () => React.createElement(LangGraph) })
 const wsTransformers = createRoute({ getParentRoute: () => wsLayout, path: "/transformers", component: () => React.createElement(Transformers) })
 const wsAgentTARS = createRoute({ getParentRoute: () => wsLayout, path: "/agent-tars", component: () => React.createElement(AgentTARS) })
-const wsAgents = createRoute({ getParentRoute: () => wsLayout, path: '/agents', component: () => React.createElement(CommandCenter) })
-const wsDocuments = createRoute({ getParentRoute: () => wsLayout, path: '/documents', component: () => React.createElement(CommandCenter) })
+const wsAgents = createRoute({ getParentRoute: () => wsLayout, path: '/agents', component: () => React.createElement(Agents) })
+const wsDocuments = createRoute({ getParentRoute: () => wsLayout, path: '/documents', component: () => React.createElement(Documents) })
+const wsTeam = createRoute({ getParentRoute: () => wsLayout, path: '/team', component: () => React.createElement(TeamDashboard) })
 const wsAutomationsTop = createRoute({ getParentRoute: () => wsLayout, path: '/automations', component: () => React.createElement(AutomationPage) })
-const wsVisualizations = createRoute({ getParentRoute: () => wsLayout, path: '/visualizations', component: () => React.createElement(CommandCenter) })
+const wsVisualizations = createRoute({ getParentRoute: () => wsLayout, path: '/visualizations', component: () => React.createElement(Visualizations) })
 
 const wsHealth = createRoute({ getParentRoute: () => wsLayout, path: '/health', component: () => React.createElement(HealthDashboard) })
 const wsTerminal = createRoute({ getParentRoute: () => wsLayout, path: '/terminal', component: () => React.createElement(TerminalPage) })
@@ -87,8 +92,7 @@ const wsWorkflows = createRoute({
   getParentRoute: () => wsLayout,
   path: '/workflows',
   // P0-fix (2026-06-18): /workflows 重定向到 /studio (Studio 页面内集成模板 Tab)
-  beforeLoad: () => { throw new Error('redirect') },
-  loader: () => { window.location.href = '/studio' },
+
   component: () => React.createElement(Studio),
 })
 const wsDiagnostics = createRoute({ getParentRoute: () => wsSettings, path: 'diagnostics', component: () => React.createElement(DiagnosticsPage) })  // D2 · 仿 Hermes doctor (2026-06-17) — P1-fix: 移入 Settings 子路由 /settings/diagnostics
@@ -104,7 +108,7 @@ const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login'
 const errorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/error/$code', component: () => React.createElement(ErrorPage) })
 
 const routeTree = rootRoute.addChildren([
-  wsLayout.addChildren([wsIndex, wsAgents, wsChat, wsStudio, wsFiles, wsMcp, wsHealth, wsAutomationsTop, wsSettings, wsSocialCookies, wsAutomations, wsMemory, wsLearnings, wsSkills, wsBrowser, wsSkill, wsDocuments, wsVisualizations, wsAgentTARS, wsAstrBot, wsLangGraph, wsTransformers, wsOpenDesign, wsOpenMontage, wsTerminal, wsWorkflows, wsDiagnostics, wsOAuth, wsModels, wsModelsText, wsModelsMultimodal, wsModelsProvider, wsModelsCustom, wsAdmin]),
+  wsLayout.addChildren([wsIndex, wsAgents, wsChat, wsStudio, wsFiles, wsMcp, wsHealth, wsAutomationsTop, wsSettings, wsSocialCookies, wsAutomations, wsMemory, wsLearnings, wsSkills, wsBrowser, wsSkill, wsDocuments, wsTeam, wsVisualizations, wsAgentTARS, wsAstrBot, wsLangGraph, wsTransformers, wsOpenDesign, wsOpenMontage, wsTerminal, wsWorkflows, wsDiagnostics, wsOAuth, wsModels, wsModelsText, wsModelsMultimodal, wsModelsProvider, wsModelsCustom, wsAdmin]),
   loginRoute,
   errorRoute,
 ])
@@ -115,7 +119,7 @@ declare module '@tanstack/react-router' {
 }
 
 createRoot(document.getElementById('root')!).render(
-  React.createElement(StrictMode, null,
+  React.createElement(React.Fragment, null,
     React.createElement(ThemeProvider, { attribute: 'class', defaultTheme: 'dark', enableSystem: true },
       React.createElement(QueryClientProvider, { client: queryClient },
         React.createElement(RouterProvider, { router })

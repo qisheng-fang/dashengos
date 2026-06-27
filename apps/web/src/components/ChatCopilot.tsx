@@ -10,7 +10,7 @@
 //     → 状态栏显示动态文案 + ◇ 消耗计数器
 
 import { useState, useRef, useEffect } from 'react'
-import { Send, Terminal, Loader2, Trash2, ChevronDown, PanelLeftClose, PanelLeft, Zap, CircleDot } from 'lucide-react'
+import { Send, Terminal, Loader2, Trash2, ChevronDown, PanelLeftClose, PanelLeft, Zap, CircleDot, CheckCircle2, XCircle } from 'lucide-react'
 import { useAppStore, type AppIntent } from '@/store/useAppStore'
 import { useAuthStore } from '@/lib/auth-store'
 import { cn } from '@/lib/utils'
@@ -69,6 +69,8 @@ interface StreamState {
   streaming: boolean
   /** 当前工具调用信息 */
   toolCall?: { name: string; args: string }
+  /** 工具执行输出（累积） */
+  toolOutputs: Array<{ name: string; args: string; ok?: boolean; summary?: string }>
   /** 错误信息 */
   error?: string
   /** 完成 */
@@ -80,6 +82,7 @@ const INITIAL_STREAM_STATE: StreamState = {
   content: '',
   tokensUsed: 0,
   streaming: false,
+  toolOutputs: [],
   done: false,
 }
 
@@ -98,6 +101,7 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
   const [stream, setStream] = useState<StreamState>(INITIAL_STREAM_STATE)
   const [showCmds, setShowCmds] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const streamTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const { addChatMessage, updateLastMessage, setActiveIntent, clearCurrentChat, activeIntent, conversations, activeConversationId, newConversation, setWelcomeMessage, syncConversationsFromBackend } =
     useAppStore()
   
@@ -106,7 +110,7 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
   const chatHistory = currentConv?.messages ?? []
   
   const scrollRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const statusRotateRef = useRef(0)
 
   // 🔄 模型选择器状态
@@ -235,6 +239,7 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
 
     // 启动流式模式
     setRunning(true)
+    if (streamTimeoutRef.current) { clearTimeout(streamTimeoutRef.current); streamTimeoutRef.current = null }
     setStream({ ...INITIAL_STREAM_STATE, streaming: true, statusText: '等待模型响应' })
     abortRef.current = new AbortController()
 
@@ -265,7 +270,11 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
       setStream((s) => ({ ...s, error: msg, streaming: false, done: true }))
     } finally {
       setRunning(false)
-      setTimeout(() => setStream((s) => ({ ...s, streaming: false, done: true })), 500)
+      if (streamTimeoutRef.current) clearTimeout(streamTimeoutRef.current)
+      streamTimeoutRef.current = setTimeout(() => {
+        setStream((s) => ({ ...s, streaming: false, done: true }))
+        streamTimeoutRef.current = null
+      }, 500)
     }
   }
 
@@ -286,7 +295,7 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
     let fullContent = ''  // ★ 每次新对话从空开始，不继承上轮内容
 
     try {
-      const response = await fetch(`${baseUrl}/api/v1/chat/stream`, {
+      let response = await fetch(`${baseUrl}/api/v1/chat/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -303,14 +312,39 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
         signal,
       })
 
-      if (!response.ok) {
-        // 401/403 → 清除登录态并跳转登录页
-        if (response.status === 401 || response.status === 403) {
-          const { useAuthStore } = await import('@/lib/auth-store')
+      // 401 → 尝试刷新 token 并重试一次
+      if (response.status === 401) {
+        const refresh = useAuthStore.getState().refreshToken
+        if (refresh) {
+          try {
+            const refRes = await fetch(`${baseUrl}/api/v1/auth/refresh`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ refresh_token: refresh }),
+            })
+            if (refRes.ok) {
+              const json = await refRes.json()
+              useAuthStore.getState().setTokens({
+                access: json.access_token,
+                refresh: json.refresh_token ?? refresh,
+                expiresAt: Date.now() + 7200 * 1000,
+              })
+              // 用新 token 重试
+              response = await fetch(`${baseUrl}/api/v1/chat/stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${json.access_token}`, Accept: 'text/event-stream' },
+                body: JSON.stringify({ message, threadId, history, model: selectedModel?.modelId || undefined, providerName: selectedModel?.providerName || undefined }),
+                signal,
+              })
+            }
+          } catch {}
+        }
+        if (response.status === 401) {
           useAuthStore.getState().clear()
           window.location.href = '/login'
           throw new Error('登录已过期，正在跳转登录页...')
         }
+      }
+      if (!response.ok) {
         const text = await response.text().catch(() => '')
         throw new Error(`HTTP ${response.status} ${text || response.statusText}`.trim())
       }
@@ -374,8 +408,42 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
                 }))
                 break
 
+              case 'tool_start': {
+                const toolName = data.n || ''
+                const toolArgs = typeof data.a === 'string' ? data.a : JSON.stringify(data.a || {}, null, 2)
+                setStream((s) => ({
+                  ...s,
+                  toolCall: toolName ? { name: toolName, args: toolArgs } : null,
+                  statusText: `⚡ 执行: ${toolName}`,
+                  toolOutputs: [...s.toolOutputs, { name: toolName, args: toolArgs }],
+                }))
+                break
+              }
+
+              case 'tool_end': {
+                const endName = data.n || data.name || ''
+                setStream((s) => {
+                  const outputs = s.toolOutputs.map(o => 
+                    o.name === endName && o.ok === undefined 
+                      ? { ...o, ok: data.ok ?? data.success ?? false, summary: data.s || data.summary || '' }
+                      : o
+                  )
+                  return {
+                    ...s,
+                    toolCall: null,
+                    statusText: (data.ok ?? data.success) ? `✅ ${endName} 完成` : `❌ ${endName} 失败`,
+                    toolOutputs: outputs,
+                  }
+                })
+                break
+              }
+
+              case 'tool_confirm':
+                updateLastMessage(`⚠️ 需要确认操作：${data.tool || '未知工具'}\n参数：${data.args || ''}\n请在浏览器中确认后继续。`)
+                setStream((s) => ({ ...s, statusText: '⏳ 等待确认...' }))
+                break
+
               case 'tool_call':
-                // 工具调用状态
                 setStream((s) => ({
                   ...s,
                   toolCall: data.tool_name ? { name: data.tool_name, args: data.tool_args || '' } : s.toolCall,
@@ -391,7 +459,6 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
 
               case 'done':
                 // 流结束
-                reader.cancel()
                 setStream((s) => ({
                   ...s,
                   streaming: false,
@@ -503,16 +570,46 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
                 /* ★ 流式中：显示动态加载状态 */
                 <div className="flex items-start gap-2">
                   <div className="flex flex-col gap-1.5 min-w-0">
-                    {/* 工具调用指示器 */}
-                    {stream.toolCall && stream.streaming && (
-                      <div className="inline-flex items-center gap-1.5 text-xs text-amber-400/80 bg-amber-400/5 px-2 py-0.5 rounded border border-amber-400/10 max-w-fit">
-                        <CircleDot size={10} />
-                        <span>{stream.toolCall.name}</span>
-                        {stream.toolCall.args && (
-                          <span className="text-neutral-500 truncate max-w-[200px]">{stream.toolCall.args.slice(0, 40)}</span>
+                    {/* 工具执行块 — 每个 tool output 格式化显示 */}
+                    {stream.toolOutputs.length > 0 && stream.toolOutputs.map((to, ti) => (
+                      <div key={ti} className={cn(
+                        "w-full rounded-lg border text-xs font-mono overflow-hidden",
+                        to.ok === undefined ? "border-amber-500/30 bg-amber-500/5" :
+                        to.ok ? "border-emerald-500/20 bg-emerald-500/5" :
+                        "border-red-500/20 bg-red-500/5"
+                      )}>
+                        <div className="flex items-center justify-between px-3 py-1.5 border-b border-inherit">
+                          <div className="flex items-center gap-2">
+                            {to.ok === undefined ? (
+                              <Loader2 size={11} className="animate-spin text-amber-400" />
+                            ) : to.ok ? (
+                              <CheckCircle2 size={11} className="text-emerald-400" />
+                            ) : (
+                              <XCircle size={11} className="text-red-400" />
+                            )}
+                            <span className="text-neutral-300 font-semibold">{to.name}</span>
+                          </div>
+                          {to.ok !== undefined && (
+                            <span className={cn(
+                              "text-[10px] px-1.5 py-0.5 rounded",
+                              to.ok ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
+                            )}>
+                              {to.ok ? 'OK' : 'FAIL'}
+                            </span>
+                          )}
+                        </div>
+                        {to.args && (
+                          <div className="px-3 py-2 text-neutral-400 bg-black/20">
+                            <code className="whitespace-pre-wrap break-all">{to.args}</code>
+                          </div>
+                        )}
+                        {to.summary && (
+                          <div className="px-3 py-1.5 text-neutral-500 border-t border-inherit text-[11px]">
+                            {to.summary.slice(0, 300)}
+                          </div>
                         )}
                       </div>
-                    )}
+                    ))}
 
                     {/* 主状态行：对标 WorkBuddy 截图风格 */}
                     <div className="flex items-center gap-2 text-neutral-400">
@@ -579,7 +676,7 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
       )}
 
       {/* ── 输入区 ── */}
-      <div className="p-4 bg-neutral-900 border-t border-neutral-800 flex-shrink-0">
+      <div className="px-5 py-4 bg-neutral-900/80 backdrop-blur-sm border-t border-neutral-800 flex-shrink-0">
         {/* 快捷命令面板 */}
         {showCmds && (
           <div className="mb-2 p-2 bg-neutral-950 border border-neutral-800 rounded-lg space-y-1">
@@ -676,24 +773,33 @@ export default function ChatCopilot({ onToggleHistory, historyOpen }: Props) {
           </span>
         </div>
 
-        <div className="relative flex items-center">
-          <input
+        <div className="relative flex items-end">
+          <textarea
             ref={inputRef}
-            type="text"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="输入 / 唤起工作流，或直接对话..."
+            onChange={(e) => {
+              setInput(e.target.value)
+              // Auto-resize
+              const el = e.target
+              el.style.height = 'auto'
+              el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
+              if (e.key === '/' && input === '') { e.preventDefault(); setShowCmds(true) }
+            }}
+            placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
             disabled={running}
-            className="w-full bg-neutral-950 border border-neutral-800 rounded-lg py-3 pl-4 pr-12 text-sm text-neutral-200 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand/30 transition-all disabled:opacity-50"
+            rows={1}
+            className="w-full bg-neutral-950 border border-neutral-700 rounded-xl py-3.5 pl-5 pr-12 text-[15px] text-neutral-100 placeholder:text-neutral-500 focus:outline-none focus:border-brand/60 focus:ring-2 focus:ring-brand/20 transition-all disabled:opacity-50 resize-none min-h-[52px] max-h-[200px] leading-relaxed"
           />
           <button
             onClick={running ? handleStop : handleSend}
             disabled={!input.trim() && !running}
-            className={`absolute right-3 transition-colors ${running ? 'text-red-400 hover:text-red-300' : 'text-neutral-500 hover:text-brand'} disabled:opacity-30`}
+            className={`absolute right-3 bottom-3 transition-colors ${running ? 'text-red-400 hover:text-red-300' : 'text-neutral-400 hover:text-brand'} disabled:opacity-30`}
             title={running ? '停止生成' : '发送'}
           >
-            {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            {running ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
           </button>
         </div>
       </div>

@@ -48,7 +48,7 @@ export const LANGGRAPH_TOOLS = [
 // ─── Python Bridge ────────────────────────────────────────
 
 function runLangGraph(script: string, args: Record<string, any>, timeoutMs = 120000): { success: boolean; data?: string; error?: string } {
-  const t0 = Date.now()
+  const _t0 = Date.now()  // eslint-disable-line
   const tmpDir = '/tmp/dasheng-langgraph'
   if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true })
   const scriptPath = `${tmpDir}/lg_${randomUUID()}.py`

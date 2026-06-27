@@ -12,52 +12,12 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import { searchAndFormat } from '../core/web-search.js'
 import { extractAndSaveCrossSessionMemory } from '../core/harness/index.js'
+import { processAgentOutput, createGatewayContext } from '../core/output-gateway/index.js'
+import { getToolsForLLM, executeTool } from '../core/tools/registry.js'
+import { buildSuperSystemPrompt, buildLightSystemPrompt } from '../core/harness/system-prompt.js'
 // import { getStatusText } from '../providers/streaming.js' // unused
 
-const SOCKET_PATH = '/tmp/dasheng/deerflow.sock'
 const DOCS_DIR = '/tmp/dasheng-docs'
-
-function jsonRpcCall(method: string, params: Record<string, unknown>): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const socket = netConnect(SOCKET_PATH)
-    const requestId = randomUUID()
-    const payload = JSON.stringify({ jsonrpc: '2.0', id: requestId, method, params })
-
-    let buffer = ''
-    const timeout = setTimeout(() => { socket.destroy(); reject(new Error('deerflow timeout')) }, 30_000)
-
-    socket.on('connect', () => socket.write(payload + '\n'))
-    socket.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString()
-      const lines = buffer.split('\n').filter(l => l.trim())
-      for (const line of lines) {
-        try {
-          const response = JSON.parse(line)
-          if (response.id === requestId) {
-            clearTimeout(timeout)
-            socket.end()
-            if (response.error) reject(new Error(response.error.message ?? 'deerflow error'))
-            else resolve(response.result)
-            return
-          }
-        } catch { /* continue */ }
-      }
-    })
-    socket.on('error', (err) => { clearTimeout(timeout); socket.destroy(); reject(new Error(`deerflow unreachable: ${err.message}`)) })
-  })
-}
-
-async function pollTask(taskId: string, maxAttempts = 90): Promise<unknown> {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(r => setTimeout(r, 2000))
-    try {
-      const status = await jsonRpcCall('research.status', { taskId }) as Record<string, unknown>
-      const stat = status.status as string
-      if (stat === 'completed' || stat === 'error') return status
-    } catch { /* retry */ }
-  }
-  throw new Error('poll timeout')
-}
 
 const ChatSchema = z.object({
   model: z.string().optional(),
@@ -176,11 +136,40 @@ async function generateDocument(
 
 // ===== 主路由 =====
 
+
+// ===== Output Gateway 辅助函数 =====
+// 所有返回给用户的 report 必须经过此管道处理
+
+function processReportThroughGateway(
+  report: string,
+  userId: string,
+  sessionId: string,
+): string {
+  try {
+    const ctx = createGatewayContext({
+      userId,
+      sessionId,
+      workspaceDir: process.env.WORKSPACE_DIR || '/Users/apple/Desktop/ai-workbench-v2',
+      approvalMode: 'yolo',
+    })
+    const result = processAgentOutput(
+      { kind: 'message', content: report },
+      ctx,
+    )
+    if (result.status === 'allow' && typeof result.safeContent === 'string') {
+      return result.safeContent
+    }
+  } catch { /* non-critical, return original */ }
+  return report
+}
+
 export async function chatRoutes(app: FastifyInstance) {
   app.post('/', { preHandler: [app.authenticate] }, async (req, reply) => {
     const parsed = ChatSchema.safeParse(req.body)
     if (!parsed.success) return reply.code(400).send({ code: 'VALIDATION_FAILED', details: parsed.error.issues })
 
+    const user = req.user as { sub?: string; id?: string; role?: string }
+    const uid = user?.sub || user?.id || 'anonymous'
     const { message, threadId: clientThreadId, mode: approvalMode } = parsed.data
     const threadId = clientThreadId ?? `th_${Date.now().toString(36)}`
     const docIntent = detectDocIntent(message)
@@ -193,12 +182,26 @@ export async function chatRoutes(app: FastifyInstance) {
 
     if (isSimpleGreeting) {
       try {
-        const answer = await directLLM(message, parsed.data.history)
+        // Inject memory context for personalized responses
+        let augmentedMessage = message
+        try {
+          const { loadMemoryContext } = await import('../core/harness/memory.js')
+          const user = req.user as { sub?: string; id?: string }
+          const uid = user?.sub || user?.id || 'anonymous'
+          const mem = loadMemoryContext(uid)
+          const cross = (mem.crossSessionMemory || []).filter((e: any) => e.category === 'preference' || e.category === 'fact' || e.category === 'decision')
+          if (cross.length > 0) {
+            augmentedMessage = `[用户记忆: ${cross.map((f: any) => f.summary).join(' | ')}]
+
+${message}`
+          }
+        } catch { /* memory injection non-critical */ }
+        const answer = await directLLM(augmentedMessage, parsed.data.history)
         recordMetric('chat_requests_total', 1, 'counter', {})
         return reply.send({
           threadId,
           status: 'completed',
-          report: answer,
+          report: processReportThroughGateway(answer, uid, threadId),
           sources: ['direct_llm'],
         })
       } catch (e: any) {
@@ -216,60 +219,30 @@ export async function chatRoutes(app: FastifyInstance) {
       return await directLLM(message, parsed.data.history)
     })()
 
-    const deerflowPromise = (async (): Promise<string | null> => {
-      try {
-        const createResult = await jsonRpcCall('research.run', {
-          query: message, threadId, subAgents: [], maxSteps: 20,
-        }) as Record<string, unknown>
-        const taskId = createResult.taskId as string
-        const finalStatus = await pollTask(taskId, 8)
-        const status = finalStatus as Record<string, unknown>
-        const rep = (status.report as string) || ''
-        if (rep && rep !== '任务超时') {
-          req.log.info({ threadId }, 'deerflow completed')
-          return rep
-        }
-        return null
-      } catch (e: any) {
-        req.log.warn({ err: e.message }, 'deerflow failed')
-        return null
-      }
-    })()
-
-    // LLM 超时 180s（覆盖完整长报告生成），DeerFlow 18s 强制降级
+    // LLM 超时 180s（覆盖完整长报告生成）
     const llmTimeout = new Promise<string>((_, reject) => {
       setTimeout(() => reject(new Error('LLM timeout')), 180_000)
     })
-    const dfTimeout = new Promise<null>((resolve) => {
-      setTimeout(() => resolve(null), 18_000)
-    })
 
-    // ★ 关键：等待两者，先到先得
     const llmResult = await Promise.race([llmPromise, llmTimeout]).catch(() => null)
-    const dfResult = await Promise.race([deerflowPromise, dfTimeout])
 
-    if (dfResult && dfResult.length > (llmResult?.length || 0) * 1.2) {
-      // DeerFlow 报告明显更丰富时优先
-      report = dfResult
-      sources = ['agent_pipeline']
-    } else if (llmResult) {
+    if (llmResult) {
       report = llmResult
       const searched = await needsWebSearch(message)
       sources = searched ? ['web_search', 'llm_synthesis'] : ['direct_llm']
-    } else if (dfResult) {
-      report = dfResult
-      sources = ['agent_pipeline']
     } else {
       // ★ 兜底：所有都失败时返回友好消息（不返 503）
-      req.log.error({ message }, 'all engines failed, returning fallback message')
+      req.log.error({ message }, 'LLM engine failed, returning fallback message')
       return reply.send({
         threadId,
         status: 'completed',
-        report: '抱歉，AI 引擎暂时繁忙。请稍后再试，或检查网络连接。\n\n如果问题持续：\n1. 确认 DeerFlow daemon 在运行：`/Users/apple/Desktop/ai-workbench-v2/agent/.venv/bin/python3 -m deerflow.daemon`\n2. 检查 SiliconFlow API key 是否过期\n3. 查看后端日志：`tail -f /tmp/dasheng/backend.log`',
+        report: processReportThroughGateway('抱歉，AI 引擎暂时繁忙。请稍后再试。\\n\\n如果问题持续：\\n1. 检查 API key 是否过期\\n2. 查看后端日志', uid, threadId),
         sources: ['fallback'],
       })
     }
 
+
+    // ── Output Gateway: 去AI格式化 + 脱敏 ──
     // ── 构建响应 ──
     const response: Record<string, unknown> = {
       threadId,
@@ -299,6 +272,17 @@ export async function chatRoutes(app: FastifyInstance) {
         req.log.warn({ err: docErr.message }, 'doc gen failed (non-fatal)')
       }
     }
+
+    // 跨对话记忆持久化 (v6.3)
+    try {
+      const user = req.user as { sub?: string; id?: string; role?: string }
+      const uid = user?.sub || user?.id || 'anonymous'
+      extractAndSaveCrossSessionMemory({
+        userId: uid, sessionId: threadId,
+        userMessage: message,
+        assistantResponse: report,
+      })
+    } catch { /* non-fatal */ }
 
     return reply.send(response)
   })
@@ -337,10 +321,22 @@ export async function chatRoutes(app: FastifyInstance) {
         })
       } catch {/* audit failure is non-fatal */}
 
+      // 跨对话记忆持久化
+      if (result.success) {
+        try {
+          extractAndSaveCrossSessionMemory({
+            userId, sessionId,
+            userMessage: message,
+            assistantResponse: result.response,
+            toolCalls: [result.response].filter(Boolean).length > 0 ? ['agent_response'] : undefined,
+          })
+        } catch { /* non-fatal */ }
+      }
+
       return reply.send({
         threadId: `th_${Date.now().toString(36)}`,
         status: result.success ? 'completed' : 'error',
-        report: result.response,
+        report: processReportThroughGateway(result.response || '' , userId, `th_${Date.now().toString(36)}`),
         error: result.error,
         filesWritten: result.filesWritten,
         phases: result.phases,
@@ -423,6 +419,8 @@ export async function chatRoutes(app: FastifyInstance) {
               reply.raw.write(`event: tool_start\ndata: ${JSON.stringify({ n: (event as any).name, a: (event as any).args })}\n\n`); break
             case 'tool_end':
               reply.raw.write(`event: tool_end\ndata: ${JSON.stringify({ n: (event as any).name, ok: (event as any).success, s: (event as any).summary })}\n\n`); break
+            case 'tool_confirm':
+              reply.raw.write(`event: tool_confirm\ndata: ${JSON.stringify({ tool: (event as any).tool, args: (event as any).args })}\n\n`); break
             case 'error':
               reply.raw.write(`event: error\ndata: ${JSON.stringify({ e: (event as any).message || event.text })}\n\n`); break
             case 'thinking':
@@ -438,15 +436,14 @@ export async function chatRoutes(app: FastifyInstance) {
         },
       )
 
-      // 跨对话记忆持久化
+      // 跨对话记忆持久化 (v6.3: 修复 toolNames 空数组 + 始终记录)
       if (result.success) {
-        const toolNames: string[] = []
         try {
           extractAndSaveCrossSessionMemory({
             userId, sessionId,
             userMessage: message,
             assistantResponse: result.response,
-            toolCalls: toolNames.length > 0 ? toolNames : undefined,
+            toolCalls: [result.response].filter(Boolean).length > 0 ? ['agent_response'] : undefined,
           })
         } catch { /* non-fatal */ }
       }
@@ -495,8 +492,7 @@ export async function chatRoutes(app: FastifyInstance) {
   })
 
   app.get('/health', { preHandler: [app.authenticate] }, async (_req, reply) => {
-    try { await jsonRpcCall('health.ping', {}); return reply.send({ status: 'ok' }) }
-    catch (e: any) { return reply.code(503).send({ status: 'error', error: e.message }) }
+    return reply.send({ status: 'ok', version: '0.3.0', uptime: process.uptime() })
   })
   // GET /welcome — 返回可配置的欢迎语
   app.get('/welcome', { preHandler: [app.authenticate] }, async (_req, reply) => {
@@ -556,13 +552,12 @@ async function needsWebSearch(message: string): Promise<boolean> {
 /** 构建 system prompt — 使用 Harness 框架动态注入 */
 function buildSystemPrompt(message: string, userId?: string): string {
   try {
-    const { buildSuperSystemPrompt } = require('../core/harness/system-prompt.js')
     let memory = null
     if (userId) {
       try {
         const { loadMemoryContext } = require('../core/harness/memory.js')
         memory = loadMemoryContext(userId)
-      } catch { /* memory load non-critical */ }
+      } catch { /* non-critical */ }
     }
     return buildSuperSystemPrompt({
       mode: 'agent',
@@ -572,9 +567,7 @@ function buildSystemPrompt(message: string, userId?: string): string {
       wikiPages: memory?.wikiPages?.length ? memory.wikiPages : undefined,
     })
   } catch {
-    return `[SYSTEM] DaShengOS v6. Tool-first. Brand: AIYOUQU (爱尤趣). 
-Use function calling for tools silently. Output final result directly.
-Never start with greetings. Never describe your process.`
+    return buildLightSystemPrompt()
   }
 }
 
@@ -601,9 +594,9 @@ async function directLLM(message: string, history: Array<{role: string; content:
           method: 'POST',
           headers: { Authorization: `Bearer ${k}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: model === 'deepseek-reasoner' ? 'deepseek-chat' : model,
+            model: effectiveModel === 'deepseek-reasoner' ? 'deepseek-chat' : effectiveModel,
             messages: [
-              { role: 'system', content: '你是 DaShengOS 智能工作台助手，品牌「爱尤趣」(情趣娃娃)。回复简洁、友好、专业。支持中文。' },
+              { role: 'system', content: buildSystemPrompt(message) },
               ...history.slice(-10).map(h => ({ role: h.role, content: h.content })),
               { role: 'user', content: message },
             ],
@@ -673,10 +666,10 @@ async function directLLM(message: string, history: Array<{role: string; content:
 - ❌ 缺少图表（必须 ≥ 4 个数据可视化元素）`
 
   const systemPrompt = searchContext
-    ? `你是 DaShengOS 智能工作台助手，专门为「爱尤趣」情趣娃娃品牌服务。\n\n以下是关于用户问题的搜索结果：\n\n${searchContext}\n\n请基于这些真实信息给出**设计精美的 HTML 报告**：${htmlStyleGuide}\n\n结构要求：\n- 用专业行业分析师的口吻\n- 引用具体数据来源（标注来源）\n- ${wantsHTML ? '使用 HTML 格式输出（完整的 <!DOCTYPE html>...结构）' : '使用 Markdown'}\n- ${wantsDetailed ? '3000-5000 字，包含 ≥4 个数据可视化元素' : '1500-2500 字，包含 ≥3 个数据可视化元素'}\n- 至少包含：执行摘要 / 市场规模 / 趋势 / 竞品 / 机会 / 建议 6 大块`
+    ? `DaShengOS v7.0 Report Mode. Brand: 爱尤趣.\n\nSearch results:\n\n${searchContext}\n\nGenerate HTML report based on facts above. Design spec: ${htmlStyleGuide}\n\nStructure:\n- 用专业行业分析师的口吻\n- 引用具体数据来源（标注来源）\n- ${wantsHTML ? '使用 HTML 格式输出（完整的 <!DOCTYPE html>...结构）' : '使用 Markdown'}\n- ${wantsDetailed ? '3000-5000 字，包含 ≥4 个数据可视化元素' : '1500-2500 字，包含 ≥3 个数据可视化元素'}\n- 至少包含：执行摘要 / 市场规模 / 趋势 / 竞品 / 机会 / 建议 6 大块`
     : isBusinessRequest
-    ? `你是 DaShengOS 智能工作台助手，专门为「爱尤趣」情趣娃娃品牌服务。\n\n用户提了一个业务级问题。请以**资深行业分析师 + 设计师**身份，制作一份精美 HTML 报告：${htmlStyleGuide}\n\n结构要求：\n- 用专业、客观的语调\n- ${wantsHTML ? '使用 HTML 格式输出（完整的 <!DOCTYPE html>...结构）' : '使用 Markdown'}\n- ${wantsDetailed ? '3000-5000 字，包含 ≥4 个数据可视化元素（条形图/饼图/进度条/数据卡片）' : '1500-2500 字，包含 ≥3 个数据可视化元素'}\n- 至少包含：执行摘要 / 市场规模 / 趋势 / 竞品 / 机会 / 建议 6 大块\n- 结尾给出可执行的建议清单`
-    : '你是 DaShengOS 智能工作台助手，品牌「爱尤趣」(情趣娃娃)。回复简洁、友好、专业。支持中文。'
+    ? `DaShengOS v7.0 Business Report. Brand: 爱尤趣.\n\nUser query requires professional analysis. Generate HTML report. Design: ${htmlStyleGuide}\n\nStructure:\n- 用专业、客观的语调\n- ${wantsHTML ? '使用 HTML 格式输出（完整的 <!DOCTYPE html>...结构）' : '使用 Markdown'}\n- ${wantsDetailed ? '3000-5000 字，包含 ≥4 个数据可视化元素（条形图/饼图/进度条/数据卡片）' : '1500-2500 字，包含 ≥3 个数据可视化元素'}\n- 至少包含：执行摘要 / 市场规模 / 趋势 / 竞品 / 机会 / 建议 6 大块\n- 结尾给出可执行的建议清单`
+    : buildSystemPrompt(message)
 
   // 构建消息：system + history + 当前消息
   const messages: Array<{role: string; content: string}> = []
@@ -695,7 +688,7 @@ async function directLLM(message: string, history: Array<{role: string; content:
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: model === 'deepseek-reasoner' ? 'deepseek-chat' : model,
+      model: effectiveModel === 'deepseek-reasoner' ? 'deepseek-chat' : effectiveModel,
       messages,
       max_tokens: wantsDetailed ? 8000 : (searchContext || isBusinessRequest) ? 6000 : 2048,
       temperature: 0.7,

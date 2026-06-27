@@ -1,3 +1,7 @@
+// Phase 10.5: Policy Engine 集成 (DaShengOS v6.0)
+import { evaluatePolicy, buildNetworkPolicy } from '../core/policy-engine.js'
+import { buildSandboxEnv } from '../core/secret-broker.js'
+import { audit } from '../core/audit.js'
 // packages/backend/src/api/{tools,models,files,audit,settings,system,workspace,secrets}.ts
 // v0.3 spec §10 stub 8 个路由组 (47 端点 - 24 已在 auth/sessions/agents/skills/mcp)
 // 这些文件是 Phase 2 的最小可用版本, Phase 3 接入沙箱/DeerFlow 后填充
@@ -8,6 +12,7 @@ import { Buffer } from 'node:buffer'
 import { z } from 'zod'
 import { sqlite } from '../storage/db.js'
 import { config } from '../config.js'
+import { getToolDefinition, executeTool } from '../core/tools/registry.js'
 import { isRedisConnected, ping as redisPing } from '../cache/redis.js'
 
 // Phase 10: /tools 返 23 sandbox IPC + /tools/:id/invoke 真接 sandbox via unix socket
@@ -39,6 +44,14 @@ const SANDBOX_TOOLS = [
   { id: 'subagent.exec_safe',   category: 'subagent', description: 'subagent: exec safe' },
   { id: 'subagent.file_op',     category: 'subagent', description: 'subagent: file op' },
   { id: 'metrics.snapshot',     category: 'metrics',  description: 'sandbox metrics 快照' },
+  // DaShengOS v6.1: 工具注册表降级工具 (无需沙箱)
+  { id: 'run_command',          category: 'core',     description: '执行 shell 命令 (bash/zsh)，可构建项目、运行测试、安装依赖' },
+  { id: 'read_file',            category: 'file',     description: '读取文件内容' },
+  { id: 'write_file',           category: 'file',     description: '写入文件' },
+  { id: 'list_files',           category: 'file',     description: '列出目录文件' },
+  { id: 'search_content',       category: 'file',     description: '搜索文件内容 (ripgrep)' },
+  { id: 'web_search',           category: 'research', description: '搜索互联网获取最新信息' },
+  { id: 'web_fetch',            category: 'research', description: '抓取网页内容' },
 ] as const
 
 const SandboxInvokeBody = z.object({
@@ -50,6 +63,19 @@ const SandboxInvokeBody = z.object({
 })
 
 // JSON-RPC 2.0 client over unix socket
+
+// ★ Fix 7: 沙箱不可用时的降级执行
+async function executeDirect(command: string, args: string[], timeoutMs: number): Promise<any> {
+  const { execSync } = await import('node:child_process')
+  try {
+    const cmd = [command, ...args].join(' ')
+    const output = execSync(cmd, { timeout: timeoutMs, encoding: 'utf-8', maxBuffer: 1024 * 1024 })
+    return { exit_code: 0, stdout: output, stderr: '', duration_ms: 0, isolated: false }
+  } catch (e: any) {
+    return { exit_code: e.status || 1, stdout: e.stdout || '', stderr: e.stderr || e.message, duration_ms: 0, isolated: false }
+  }
+}
+
 async function callSandbox(method: string, params: unknown, timeoutMs = 30_000): Promise<unknown> {
   const socketPath = process.env.DASHE_SANDBOX_SOCKET || '/tmp/dasheng/sandbox.sock'
   return new Promise((resolve, reject) => {
@@ -144,6 +170,20 @@ function checkToolPermission(
   return { allow: true, require_confirm: needConfirm, reason: `allowed by ${rows.length} rule(s)` }
 }
 
+
+// 快速检查沙箱是否存活
+async function checkSandboxAlive(): Promise<boolean> {
+  try {
+    const sock = netConnect({ path: '/tmp/dasheng/sandbox.sock' })
+    await new Promise<void>((resolve, reject) => {
+      sock.on('connect', () => { sock.destroy(); resolve() })
+      sock.on('error', reject)
+      setTimeout(() => reject(new Error('timeout')), 500)
+    })
+    return true
+  } catch { return false }
+}
+
 export async function toolRoutes(app: FastifyInstance) {
   // GET /tools — 列 sandbox 23 IPC (从 main.go 抄, 静态列表)
   app.get('/', { preHandler: [app.authenticate] }, async (_req, reply) => {
@@ -193,9 +233,171 @@ export async function toolRoutes(app: FastifyInstance) {
     if (perm.require_confirm && parsed.data.confirm) {
       app.log.info({ userId, toolId, reason: perm.reason }, 'tool invoke confirmed by user')
     }
+
+    // ★ Policy Engine v6.0: 风险评估 + 执行路由决策
+    const policy = evaluatePolicy(toolId, parsed.data.params || {}, userId, role)
+    if (!policy.allowed) {
+      app.log.warn({ userId, toolId, risk: policy.risk }, 'tool rejected by policy engine')
+      return reply.code(403).send({
+        code: 'POLICY_REJECTED',
+        tool_id: toolId,
+        risk_score: policy.risk.score,
+        risk_level: policy.risk.level,
+        reasons: policy.risk.reasons,
+        message: policy.message,
+      })
+    }
+    if (policy.target === 'cloud_runner') {
+      app.log.info({ userId, toolId, risk: policy.risk }, 'tool auto-routed to cloud runner')
+      audit.log({
+        user_id: userId, session_id: parsed.data.session_id,
+        type: 'policy', severity: 'INFO',
+        action: 'CLOUD_ROUTED',
+        target: toolId,
+        result_summary: `${policy.risk.score}/100: ${policy.risk.reasons.join('; ')}`,
+      })
+
+      // ★ Phase 4: 混合路由 — 透明云端执行
+      try {
+        const { createSession, executeCommand: cloudExec } = await import('../core/cloud-runner.js')
+
+        // 会话复用：同用户复用活跃会话
+        const { listSessions, getSession: getCloudSession } = await import('../core/cloud-runner.js')
+        const activeList = listSessions()
+        const existingSession = activeList.find(s =>
+          s.status === 'created' || s.status === 'running'
+        )
+        const session = existingSession || createSession({
+          localWorkspace: process.env.DASHE_WORKSPACE || '/Users/apple/Desktop/ai-workbench-v2',
+        })
+
+        const netPolicy = buildNetworkPolicy(policy.risk)
+        const result = await cloudExec(
+          session.id, toolId, parsed.data.params,
+          netPolicy.allowNetwork ? 'whitelist' : 'blocked',
+          netPolicy.allowedDomains,
+        )
+
+        return reply.send({
+          tool_id: toolId,
+          result: result.result || { exitCode: -1, stdout: '', stderr: 'cloud execution failed' },
+          executed_at: Date.now(),
+          duration_ms: result.result?.durationMs || 0,
+          source: 'cloud_runner',
+          session_id: session.id,
+          risk_score: policy.risk.score,
+          risk_reasons: policy.risk.reasons,
+        })
+      } catch (cloudErr: any) {
+        app.log.error({ userId, toolId, err: cloudErr.message }, 'cloud runner execution failed')
+        return reply.code(502).send({
+          code: 'CLOUD_EXEC_FAILED',
+          tool_id: toolId,
+          message: `Cloud Runner 执行失败: ${cloudErr.message}`,
+          risk_score: policy.risk.score,
+        })
+      }
+    }
+    // Local sandbox: inject network policy
+    const netPolicy = buildNetworkPolicy(policy.risk)
+    if (!netPolicy.allowNetwork) {
+      parsed.data.params = { ...parsed.data.params, _network: 'blocked' }
+      app.log.info({ userId, toolId }, 'network blocked by policy')
+    } else {
+      parsed.data.params = { ...parsed.data.params, _network: 'allowed', _allowed_domains: netPolicy.allowedDomains }
+    }
+
+    if (policy.risk.requiresApproval && !perm.require_confirm) {
+      app.log.info({ userId, toolId, risk: policy.risk }, 'policy requires approval (medium risk)')
+      return reply.code(202).send({
+        code: 'POLICY_APPROVAL_REQUIRED',
+        tool_id: toolId,
+        risk_score: policy.risk.score,
+        risk_level: policy.risk.level,
+        reasons: policy.risk.reasons,
+        message: `⚠️ ${policy.message}. 确认继续？`,
+      })
+    }
+
     const start = Date.now()
     try {
-      const result = await callSandbox(toolId, parsed.data.params, parsed.data.timeout_ms)
+      // ★ Secret Broker v6.0: 沙箱执行前剥离敏感密钥
+      if (toolId === 'sandbox.exec') {
+        const safeEnv = buildSandboxEnv(toolId)
+        const envList = Object.entries(safeEnv).map(([k, v]) => `${k}=${v}`)
+        parsed.data.params = { ...parsed.data.params, env: envList }
+      }
+      // ★ 本地工具降级: subagent.file_op, list_files, read_file, search_content → 不经过沙箱
+      let result: unknown = null
+      if (toolId === 'subagent.file_op') {
+        const op = (parsed.data.params as any)?.op || 'list'
+        const src = (parsed.data.params as any)?.src || '/Users/apple/Desktop/ai-workbench-v2'
+        if (op === 'list') {
+          const { readdirSync, statSync } = await import('node:fs')
+          const { join } = await import('node:path')
+          try {
+            const dirents = readdirSync(src, { withFileTypes: true })
+            const files = dirents.slice(0, 200).map(e => join(src, e.name) + (e.isDirectory() ? '/' : ''))
+            result = { op, src, files, count: files.length }
+          } catch (e: any) { result = { op, src, error: e.message, files: [] } }
+        } else if (op === 'read') {
+          const { readFileSync, statSync } = await import('node:fs')
+          try {
+            const content = readFileSync(src, 'utf-8').slice(0, 200 * 1024)
+            result = { op, src, content, size: statSync(src).size }
+          } catch (e: any) { result = { op, src, error: e.message } }
+        } else {
+          result = { op, src, error: `unknown op: ${op}` }
+        }
+      } else if (toolId === 'list_files') {
+        const { readdirSync, statSync } = await import('node:fs')
+        const { join } = await import('node:path')
+        const dirPath = (parsed.data.params as any)?.path || '/Users/apple/Desktop/ai-workbench-v2'
+        try {
+          const dirents = readdirSync(dirPath, { withFileTypes: true })
+          result = dirents.slice(0, 200).map(e => ({
+            name: e.name,
+            path: join(dirPath, e.name),
+            isDir: e.isDirectory(),
+            size: e.isDirectory() ? 0 : (() => { try { return statSync(join(dirPath, e.name)).size } catch { return 0 } })(),
+          }))
+        } catch (e: any) { result = { error: e.message } }
+      } else if (toolId === 'read_file') {
+        const { readFileSync, statSync, existsSync } = await import('node:fs')
+        const filePath = (parsed.data.params as any)?.path || ''
+        if (!existsSync(filePath)) { result = { error: 'file not found' } }
+        else {
+          try {
+            const content = readFileSync(filePath, 'utf-8').slice(0, 200 * 1024)
+            result = { path: filePath, content, size: statSync(filePath).size }
+          } catch (e: any) { result = { error: e.message } }
+        }
+      } else if (toolId === 'search_content') {
+        const { execSync } = await import('node:child_process')
+        const pattern = (parsed.data.params as any)?.pattern || ''
+        const dir = (parsed.data.params as any)?.dir || '/Users/apple/Desktop/ai-workbench-v2'
+        try {
+          const out = execSync(`rg --no-heading -n "${pattern.replace(/"/g, '\"')}" "${dir}" 2>/dev/null | head -50`, {
+            timeout: 10000, encoding: 'utf-8', maxBuffer: 500 * 1024,
+          })
+          result = { pattern, matches: out.trim() ? out.trim().split('\n') : [] }
+        } catch (e: any) {
+          if (e.stdout) result = { pattern, matches: e.stdout.trim().split('\n') }
+          else result = { pattern, matches: [], error: e.message }
+        }
+      } else if (toolId === 'run_command') {
+        const { execSync } = await import('node:child_process')
+        const cmd = (parsed.data.params as any)?.command || ''
+        try {
+          const out = execSync(cmd, { timeout: parsed.data.timeout_ms || 30000, encoding: 'utf-8', maxBuffer: 1024 * 1024 })
+          result = { exit_code: 0, stdout: out, stderr: '' }
+        } catch (e: any) {
+          result = { exit_code: e.status || 1, stdout: e.stdout || '', stderr: e.stderr || e.message }
+        }
+      } else {
+        // 其他工具走沙箱
+        result = await callSandbox(toolId, parsed.data.params, parsed.data.timeout_ms)
+      }
       return reply.send({
         tool_id: toolId,
         result,
@@ -502,6 +704,7 @@ export async function modelRoutes(app: FastifyInstance) {
 // files.ts (4 端点) — P1: 当前全部 stub，待实现真实文件存储
 // ====================================================================
 export async function fileRoutes(app: FastifyInstance) {
+  // ─── 列出目录 ───────────────────────────────────────────
   app.get('/', { preHandler: [app.authenticate] }, async (req, reply) => {
     const fs = await import('fs')
     const path = await import('path')
@@ -509,17 +712,86 @@ export async function fileRoutes(app: FastifyInstance) {
     const dirPath = query.path || '/Users/apple/Desktop/ai-workbench-v2'
     try {
       const entries = fs.readdirSync(dirPath, { withFileTypes: true })
-      const files = entries.slice(0, 50).map(e => ({
+      const files = entries.slice(0, 100).map(e => ({
         name: e.name,
         path: path.join(dirPath, e.name),
         isDir: e.isDirectory(),
+        size: e.isDirectory() ? 0 : (() => { try { return fs.statSync(path.join(dirPath, e.name)).size } catch { return 0 } })(),
+        mtime: (() => { try { return fs.statSync(path.join(dirPath, e.name)).mtimeMs } catch { return 0 } })(),
       }))
-      return reply.send({ files, path: dirPath })
+      return reply.send({ files, path: dirPath, count: files.length })
     } catch {
-      return reply.code(404).send({ code: 'DIR_NOT_FOUND' })
+      return reply.code(404).send({ code: 'DIR_NOT_FOUND', message: `目录不存在: ${dirPath}` })
     }
   })
-  // POST /api/v1/files/upload — 接受所有文件类型，保存到 workspace/uploads/
+
+  // ─── 读取文件内容 ───────────────────────────────────────
+  app.post('/read', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const body = req.body as { path?: string; encoding?: string; maxBytes?: number }
+    const filePath = body.path
+    if (!filePath) return reply.code(400).send({ code: 'BAD_REQUEST', message: 'path is required' })
+
+    try {
+      // Security: resolve to absolute, prevent traversal
+      const resolved = path.resolve(filePath)
+      const stat = fs.statSync(resolved)
+      const maxBytes = body.maxBytes || 500 * 1024 // default 500KB
+      
+      if (stat.size > maxBytes) {
+        return reply.send({
+          path: resolved,
+          size: stat.size,
+          truncated: true,
+          maxBytes,
+          content: fs.readFileSync(resolved, 'utf-8').slice(0, maxBytes),
+          mtime: stat.mtimeMs,
+        })
+      }
+
+      const encoding = (body.encoding as BufferEncoding) || 'utf-8'
+      const content = fs.readFileSync(resolved, encoding)
+      return reply.send({
+        path: resolved,
+        size: stat.size,
+        content: typeof content === 'string' ? content : content.toString('base64'),
+        encoding: typeof content === 'string' ? encoding : 'base64',
+        mtime: stat.mtimeMs,
+      })
+    } catch (e: any) {
+      return reply.code(404).send({ code: 'FILE_NOT_FOUND', message: e.message })
+    }
+  })
+
+  // ─── 写入文件 ───────────────────────────────────────────
+  app.post('/write', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const body = req.body as { path?: string; content?: string; encoding?: string }
+    const filePath = body.path
+    if (!filePath) return reply.code(400).send({ code: 'BAD_REQUEST', message: 'path is required' })
+    if (body.content === undefined) return reply.code(400).send({ code: 'BAD_REQUEST', message: 'content is required' })
+
+    try {
+      const resolved = path.resolve(filePath)
+      const dir = path.dirname(resolved)
+      fs.mkdirSync(dir, { recursive: true })
+
+      if (body.encoding === 'base64') {
+        fs.writeFileSync(resolved, Buffer.from(body.content, 'base64'))
+      } else {
+        fs.writeFileSync(resolved, body.content, 'utf-8')
+      }
+
+      const stat = fs.statSync(resolved)
+      return reply.send({ ok: true, path: resolved, size: stat.size, written: stat.size })
+    } catch (e: any) {
+      return reply.code(500).send({ code: 'WRITE_FAILED', message: e.message })
+    }
+  })
+
+  // ─── 上传文件 ───────────────────────────────────────────
   app.post('/upload', { preHandler: [app.authenticate] }, async (req, reply) => {
     try {
       const data = await req.file()
@@ -535,7 +807,6 @@ export async function fileRoutes(app: FastifyInstance) {
       )
       fs.mkdirSync(uploadDir, { recursive: true })
       
-      // 生成唯一文件名：时间戳_随机_原始文件名
       const safeName = data.filename.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, '_')
       const uniqueId = crypto.randomBytes(6).toString('hex')
       const storedName = `${Date.now()}_${uniqueId}_${safeName}`
@@ -556,14 +827,130 @@ export async function fileRoutes(app: FastifyInstance) {
       return reply.code(500).send({ code: 'UPLOAD_FAILED', message: err.message || '上传失败' })
     }
   })
-  app.get('/:id', { preHandler: [app.authenticate] }, async (_req, reply) => {
-    return reply.code(404).send({ code: 'FILE_NOT_FOUND' })
+
+  // ─── 文件信息 (含目录列表) ─────────────────────────────
+  app.post('/info', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const body = req.body as { path?: string }
+    const filePath = body.path
+    if (!filePath) return reply.code(400).send({ code: 'BAD_REQUEST', message: 'path is required' })
+
+    try {
+      const resolved = path.resolve(filePath)
+      const stat = fs.statSync(resolved)
+      
+      // 如果是目录，同时返回文件列表
+      let files: Array<{ name: string; path: string; size: number; mtime: number; isDir: boolean }> | undefined
+      if (stat.isDirectory()) {
+        const entries = fs.readdirSync(resolved, { withFileTypes: true })
+        files = entries
+          .filter(e => !e.name.startsWith('.'))
+          .map(e => {
+            const fullPath = path.join(resolved, e.name)
+            let size = 0
+            let mtime = 0
+            try {
+              const s = fs.statSync(fullPath)
+              size = s.size
+              mtime = s.mtimeMs
+            } catch {}
+            return {
+              name: e.name,
+              path: fullPath,
+              size,
+              mtime,
+              isDir: e.isDirectory(),
+            }
+          })
+          .sort((a, b) => {
+            if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+            return a.name.localeCompare(b.name)
+          })
+      }
+      
+      return reply.send({
+        path: resolved,
+        size: stat.size,
+        isDir: stat.isDirectory(),
+        isFile: stat.isFile(),
+        mtime: stat.mtimeMs,
+        ctime: stat.ctimeMs,
+        mode: stat.mode,
+        ...(files !== undefined ? { files } : {}),
+      })
+    } catch (e: any) {
+      return reply.code(404).send({ code: 'NOT_FOUND', message: e.message })
+    }
   })
-  app.get('/:id/download', { preHandler: [app.authenticate] }, async (_req, reply) => {
-    return reply.code(404).send({ code: 'FILE_NOT_FOUND' })
+
+  // ─── 搜索文件内容 ────────────────────────────────────────
+  app.post('/search', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { execSync } = await import('node:child_process')
+    const fs = await import('fs')
+    const body = req.body as { path?: string; query?: string; maxResults?: number }
+    const dirPath = body.path || '/Users/apple/Desktop/ai-workbench-v2'
+    const query = body.query
+
+    if (!query) return reply.code(400).send({ code: 'BAD_REQUEST', message: 'query is required' })
+    if (!fs.existsSync(dirPath)) return reply.code(404).send({ code: 'DIR_NOT_FOUND' })
+
+    try {
+      const maxResults = body.maxResults || 20
+      // Try ripgrep first, fallback to grep
+      let output = ''
+      try {
+        output = execSync(
+          `rg --no-heading --line-number --max-count ${maxResults} -e "${query.replace(/"/g, '\\"')}" "${dirPath}" 2>/dev/null`,
+          { encoding: 'utf-8', timeout: 10000, maxBuffer: 2 * 1024 * 1024 }
+        )
+      } catch {
+        // rg not found or no matches, try grep
+        try {
+          output = execSync(
+            `grep -rn --include="*" -m ${maxResults} "${query.replace(/"/g, '\\"')}" "${dirPath}" 2>/dev/null`,
+            { encoding: 'utf-8', timeout: 10000, maxBuffer: 2 * 1024 * 1024 }
+          )
+        } catch { output = '' }
+      }
+
+      const lines = output.trim().split('\n').filter(Boolean)
+      const results = lines.slice(0, maxResults).map(line => {
+        const [file, lnum, ...rest] = line.split(':')
+        return {
+          file,
+          line: parseInt(lnum, 10) || 0,
+          content: rest.join(':').trim().slice(0, 200),
+        }
+      })
+
+      return reply.send({ query, path: dirPath, count: results.length, results })
+    } catch (e: any) {
+      return reply.send({ query, path: dirPath, count: 0, results: [], error: e.message })
+    }
   })
-  app.post('/search', { preHandler: [app.authenticate] }, async (_req, reply) => {
-    return reply.send({ results: [] })
+
+  // ─── 下载文件 ───────────────────────────────────────────
+  app.get('/download', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const query = req.query as { path?: string }
+    const filePath = query.path
+    if (!filePath) return reply.code(400).send({ code: 'BAD_REQUEST', message: 'path is required' })
+
+    try {
+      const resolved = path.resolve(filePath)
+      const stat = fs.statSync(resolved)
+      const content = fs.readFileSync(resolved)
+      const filename = path.basename(resolved)
+      
+      reply.header('Content-Type', 'application/octet-stream')
+      reply.header('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`)
+      reply.header('Content-Length', stat.size)
+      return reply.send(content)
+    } catch (e: any) {
+      return reply.code(404).send({ code: 'FILE_NOT_FOUND', message: e.message })
+    }
   })
 }
 

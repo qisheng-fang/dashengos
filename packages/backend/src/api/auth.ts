@@ -6,7 +6,7 @@ import { sqlite } from '../storage/db.js'
 import { issueTokens } from '../core/gateway.js'
 import { config } from '../config.js'
 import { metrics } from '../core/metrics.js'
-import bcrypt from 'bcrypt'
+import bcrypt from 'bcryptjs'
 
 const LoginSchema = z.object({
   username: z.string().min(3).max(64),

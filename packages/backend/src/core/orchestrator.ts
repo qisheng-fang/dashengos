@@ -2,7 +2,6 @@
 //
 // 实现 5 种工作流模式: pipeline, parallel, conditional, loop, debate
 // 通过 SiliconFlow LLM 驱动 conditional/loop 分支决策
-// 调用 deerflow daemon (Unix socket JSON-RPC) 执行 agent
 
 import { connect } from 'node:net'
 import { randomUUID } from 'node:crypto'
@@ -70,87 +69,8 @@ async function callAgent(agentId: string, input: string, context?: Record<string
 }> {
   const t0 = Date.now()
 
-  // 优先走 DeerFlow daemon (如果启用)
-  if (config.DEERFLOW_ENABLED) {
-    return callAgentViaDeerFlow(agentId, input, context, t0)
-  }
-
-  // 否则走直连 SiliconFlow (OpenAI 兼容)
+  // 直连 LLM (OpenAI 兼容)
   return callAgentViaSiliconFlow(agentId, input, context, t0)
-}
-
-async function callAgentViaDeerFlow(
-  agentId: string, input: string,
-  context: Record<string, unknown> | undefined, t0: number,
-): Promise<{ output: string; tokens_used: number; duration_ms: number }> {
-  return new Promise((resolve, reject) => {
-    const socketPath = config.DEERFLOW_SOCKET_PATH
-    const client = connect(socketPath)
-
-    let buf = ''
-    const requestId = randomUUID()
-
-    client.on('connect', () => {
-      const req = JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'agent.run',
-        params: {
-          agent_id: agentId,
-          input,
-          context: context || {},
-          request_id: requestId,
-        },
-        id: requestId,
-      }) + '\n'
-      client.write(req)
-    })
-
-    client.on('data', (data: Buffer) => {
-      buf += data.toString()
-
-      // 按换行拆分 JSON-RPC 响应
-      const lines = buf.split('\n')
-      buf = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.trim()) continue
-        try {
-          const msg = JSON.parse(line)
-          if (msg.id === requestId || msg.method === 'agent.result') {
-            const result = msg.result || msg.params?.result || {}
-            client.destroy()
-            resolve({
-              output: result.output || result.content || '',
-              tokens_used: result.tokens_used || result.tokens || 0,
-              duration_ms: Date.now() - t0,
-            })
-            return
-          }
-          if (msg.error) {
-            client.destroy()
-            reject(new Error(msg.error.message || 'DeerFlow error'))
-            return
-          }
-        } catch {
-          // 非 JSON 行，忽略
-        }
-      }
-    })
-
-    client.on('error', (err: Error) => {
-      client.destroy()
-      reject(err)
-    })
-
-    client.on('close', () => {
-      reject(new Error('DeerFlow socket closed unexpectedly'))
-    })
-
-    setTimeout(() => {
-      client.destroy()
-      reject(new Error('DeerFlow agent call timeout'))
-    }, config.SILICONFLOW_TIMEOUT_SEC * 1000)
-  })
 }
 
 async function callAgentViaSiliconFlow(

@@ -5,27 +5,36 @@ import { useUIStore } from '@/store/ui'
 import { useAuthStore } from '@/lib/auth-store'
 import { http, api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import { Settings, LogOut, Terminal, ChevronUp, ChevronDown, Activity, MessageSquare, Bot, Zap, Puzzle, Workflow, Globe, Palette, Film, Sun, Moon, Plus, Search, X, PanelLeft, ArrowRight, ExternalLink, MoreHorizontal, Edit3, Trash2, Archive, FolderOpen, Timer } from 'lucide-react'
+import { Settings, LogOut, Terminal, ChevronUp, ChevronDown, Activity, MessageSquare, Bot, Zap, Puzzle, Workflow, Globe, Palette, Film, Sun, Moon, Plus, Search, X, PanelLeft, ArrowRight, ExternalLink, MoreHorizontal, Edit3, Trash2, Archive, FolderOpen, Timer, HeartPulse, BarChart3, FileText, Cpu, Shield, Brain } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from '@tanstack/react-router'
 import { useTheme } from 'next-themes'
 import { cn } from '@/lib/utils'
-import { SimpleTerminal } from '@/components/SimpleTerminal'
+
+import { DetailPanel } from '@/components/DetailPanel'
+import { XTermTerminal } from '@/components/XTermTerminal'
 
 interface ShellProps { children: ReactNode }
 
 const NAV_ITEMS = [
   { to: '/chats/default', label: '工作台', icon: MessageSquare },
   { to: '/automations', label: '自动化', icon: Timer },
+  { to: '/studio', label: '工作流', icon: Workflow },
+  { to: '/agent-tars', label: 'Agent TARS', icon: Activity },
+  { to: '/astrbot', label: 'AstrBot', icon: Bot },
+  { to: '/langgraph', label: 'LangGraph', icon: Workflow },
   { to: '/mcp', label: 'MCP', icon: Zap },
   { to: '/skills', label: 'Skills', icon: Puzzle },
-  { to: '/studio', label: '工作流', icon: Workflow },
-  { to: '/astrbot', label: 'AstrBot', icon: Bot },
-  { to: '/agent-tars', label: 'Agent TARS', icon: Activity },
+  { to: '/health', label: '健康监控', icon: HeartPulse },
+  { to: '/files', label: '文件', icon: FolderOpen },
+  { to: '/terminal', label: '终端', icon: Terminal },
+  { to: '/browser', label: '浏览器', icon: Globe },
   { to: '/open-design', label: 'Open Design', icon: Palette },
   { to: '/openmontage', label: 'OpenMontage', icon: Film },
-  { to: '/browser', label: '浏览器', icon: Globe },
-  { to: '/terminal', label: '终端', icon: Terminal },
+  { to: '/visualizations', label: '可视化', icon: BarChart3 },
+  { to: '/transformers', label: 'Transformers', icon: Cpu },
+  { to: '/team', label: '团队', icon: Shield },
+  { to: '/settings', label: '设置', icon: Settings },
 ]
 
 export function Shell({ children }: ShellProps) {
@@ -33,7 +42,8 @@ export function Shell({ children }: ShellProps) {
   const location = useLocation()
   const user = useAuthStore((s) => s.user)
   const clearAuth = useAuthStore((s) => s.clear)
-  const { sessionBarOpen, toggleSessionBar, terminalOpen, toggleTerminal, setActiveSessionId } = useUIStore()
+  const { sessionBarOpen, toggleSessionBar, terminalOpen, toggleTerminal, activeSessionId, setActiveSessionId } = useUIStore()
+  const [rightPanelOpen, setRightPanelOpen] = useState(false)
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
   const [backendStatus, setBackendStatus] = useState<'online' | 'offline' | 'checking'>('checking')
@@ -194,6 +204,7 @@ export function Shell({ children }: ShellProps) {
           <Button variant="ghost" size="icon" className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--text-primary)]" onClick={toggleTerminal}><Terminal size={15} /></Button>
           <Button variant="ghost" size="icon" className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--text-primary)]" onClick={() => setBrowserOpen(true)} title="内置浏览器"><Globe size={15} /></Button>
           <Link to="/settings"><Button variant="ghost" size="icon" className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--text-primary)]"><Settings size={15} /></Button></Link>
+          <Button variant="ghost" size="icon" className="h-7 w-7 text-[var(--text-muted)] hover:text-[var(--text-primary)]" onClick={() => setRightPanelOpen(!rightPanelOpen)} title="详情面板"><Brain size={15} /></Button>
           {user && <div className="flex items-center gap-2 ml-2 pl-2 border-l border-[var(--border)]"><span className="text-[0.6rem] text-[var(--text-soft)] hidden md:inline">{user.username}</span><Button variant="ghost" size="icon" className="h-7 w-7 text-[var(--text-muted)] hover:text-[#f87171]" onClick={handleLogout}><LogOut size={14} /></Button></div>}
         </div>
       </header>
@@ -346,8 +357,21 @@ export function Shell({ children }: ShellProps) {
         <main className="flex-1 overflow-hidden bg-[var(--bg-primary)]">{children}</main>
       </div>
 
-      {/* ⑤ 终端 — 轻量版 HTTP 命令执行 */}
-      {terminalOpen && <SimpleTerminal onClose={toggleTerminal} />}
+      {/* ⑤ 终端 — AI + Shell 双模式 */}
+      {terminalOpen && (
+        <div className="h-64 bg-[#0a0a0f] border-t border-[var(--border)] flex-shrink-0 flex flex-col">
+          <div className="flex items-center justify-between px-2 py-0.5 bg-[#12121f] border-b border-[var(--border)] flex-shrink-0">
+            <div className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+              <span className="text-[10px] text-[var(--text-muted)]">Terminal · bash</span>
+            </div>
+            <button onClick={toggleTerminal} className="text-[var(--text-muted)] hover:text-white text-xs">✕</button>
+          </div>
+          <div className="flex-1 min-h-0">
+            <XTermTerminal className="h-full w-full" />
+          </div>
+        </div>
+      )}
       {!terminalOpen && <button onClick={toggleTerminal} className="fixed bottom-3 right-4 z-50 flex items-center gap-1 px-2.5 py-1 rounded bg-[var(--bg-tertiary)]/90 text-[0.55rem] text-[var(--text-muted)] border border-[var(--border)] shadow-lg"><Terminal size={11} /><ChevronUp size={11} /></button>}
 
       

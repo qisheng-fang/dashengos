@@ -1,7 +1,29 @@
-# Day 0 骨架 · .gitignore (项目根)
-# ⚠️ P0 阶段 git 还没 init, 提前写好以备 P1 启用
+# DaShengOS .gitignore
 
-# === Vendors (克隆的源码, 大文件, 不入 git) ===
+# === 数据库 🔴 绝对不能提交 ===
+*.db
+*.db-shm
+*.db-wal
+*.db.corrupt.bak
+*.sqlite
+*.sqlite3
+
+# === 备份 🔴 绝对不能提交 ===
+backups/
+
+# === 敏感配置 🔴 绝对不能提交 ===
+.env
+.env.*
+!.env.example
+.codex-protect
+.codex-protect-hash
+secrets/
+*.pem
+*.key
+*.p12
+credentials.json
+
+# === Vendors ===
 vendors/
 
 # === Logs ===
@@ -29,18 +51,13 @@ logs/
 .idea/
 *.swp
 
-# === Local env ===
-.env
-.env.local
-.env.*.local
-!.env.example
-
 # === pnpm ===
 .pnpm-store/
 
-# === Generated reports ===
+# === Generated ===
 health-check-report-*.html
-zvec/
 .env.persist
 zvec/
-backups/*.db
+
+# === macOS ===
+*.icloud

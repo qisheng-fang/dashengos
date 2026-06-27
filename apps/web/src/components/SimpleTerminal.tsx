@@ -1,80 +1,102 @@
-// DaShengOS SimpleTerminal — HTTP 命令执行终端
-// 不走 WebSocket，直接 POST /api/v1/terminal/exec
-import { useState, useRef, useEffect } from 'react'
+// SimpleTerminal — 隐藏 input 方案 + 强制聚焦
+import { useState, useEffect, useRef } from 'react'
 
 export function SimpleTerminal({ onClose }: { onClose: () => void }) {
-  const [output, setOutput] = useState<string[]>(['$ 简易终端就绪 — 输入命令后回车执行'])
-  const [input, setInput] = useState('')
-  const [running, setRunning] = useState(false)
-  const outputRef = useRef<HTMLDivElement>(null)
+  const [lines, setLines] = useState<string[]>(['DaShengOS Terminal v6.1 — 点击任意位置后输入命令'])
+  const [busy, setBusy] = useState(false)
+  const [ok, setOk] = useState<boolean | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const [val, setVal] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    inputRef.current?.focus()
-    if (outputRef.current) {
-      outputRef.current.scrollTop = outputRef.current.scrollHeight
-    }
-  }, [output])
+    fetch('/api/v1/health/ping')
+      .then(r => r.json()).then(d => setOk(d.status === 'ok'))
+      .catch(() => setOk(false))
+  }, [])
 
-  async function execute(cmd: string) {
-    if (!cmd.trim()) return
-    setOutput(prev => [...prev, `$ ${cmd}`])
-    setInput('')
-    setRunning(true)
+  const tok = () => {
+    try { return JSON.parse(localStorage.getItem('dasheng-auth') || '{}')?.state?.accessToken || '' }
+    catch { return '' }
+  }
+
+  const focus = () => {
+    const el = inputRef.current
+    if (el) { el.focus(); el.click() }
+  }
+
+  // 强制聚焦：监听 mousedown 在容器内
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const handler = () => focus()
+    el.addEventListener('mousedown', handler)
+    return () => el.removeEventListener('mousedown', handler)
+  }, [])
+
+  // 初始聚焦
+  useEffect(() => { setTimeout(focus, 300) }, [])
+
+  const exec = async () => {
+    const c = val.trim()
+    if (!c || busy) return
+    setLines(prev => [...prev, '$ ' + c])
+    setVal('')
+    setBusy(true)
     try {
-      const token = (() => {
-        try { return JSON.parse(localStorage.getItem('dasheng-auth') || '{}')?.state?.accessToken || '' }
-        catch { return '' }
-      })()
-      const resp = await fetch('/api/v1/terminal/exec', {
+      const r = await fetch('/api/v1/terminal/exec', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ command: cmd, cwd: '/Users/apple/Desktop/ai-workbench-v2' }),
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok() },
+        body: JSON.stringify({ command: c, cwd: '/Users/apple/Desktop/ai-workbench-v2' }),
       })
-      const data = await resp.json()
-      if (data.output) {
-        setOutput(prev => [...prev, ...data.output.split('\n').filter((l: string) => l.trim())])
-      } else if (data.error) {
-        setOutput(prev => [...prev, `\x1b[31m${data.error}\x1b[0m`])
-      }
+      const d = await r.json()
+      if (d.output) setLines(prev => [...prev, ...d.output.split('\n').filter(l => l)])
+      if (d.error) setLines(prev => [...prev, 'ERR: ' + d.error])
     } catch (e: any) {
-      // Fallback: if API fails, try the PTY WebSocket approach
-      setOutput(prev => [...prev, `\x1b[33m后端未响应: ${e.message}\x1b[0m`])
-      setOutput(prev => [...prev, '\x1b[36m提示: 可在左侧导航点击「终端」使用完整 PTY 终端\x1b[0m'])
+      setLines(prev => [...prev, 'ERR: ' + e.message])
     } finally {
-      setRunning(false)
+      setBusy(false)
+      setTimeout(focus, 100)
     }
   }
 
   return (
-    <div className="h-48 bg-[#0a0a0f] border-t border-[#1e1e2e] flex-shrink-0 flex flex-col font-mono text-xs">
-      <div className="flex items-center justify-between px-3 py-1 bg-[#12121f] border-b border-[#1e1e2e]">
-        <span className="text-[10px] text-[#888]">Terminal</span>
-        <button onClick={onClose} className="text-[#888] hover:text-white text-xs">✕</button>
+    <div ref={containerRef} className="h-48 bg-[#0a0a0f] border-t border-[#1e1e2e] flex-shrink-0 flex flex-col font-mono text-xs"
+      style={{ cursor: 'text' }}>
+      {/* bar */}
+      <div className="flex items-center justify-between px-2 py-0.5 bg-[#12121f] border-b border-[#1e1e2e]">
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-block w-1.5 h-1.5 rounded-full ${ok === true ? 'bg-green-500' : ok === false ? 'bg-red-500' : 'bg-yellow-500'}`} />
+          <span className="text-[10px] text-neutral-500">Terminal</span>
+          {ok === true && <span className="text-[9px] text-green-600">在线</span>}
+          {ok === false && <span className="text-[9px] text-red-500">离线</span>}
+        </div>
+        <button onClick={onClose} className="text-neutral-500 hover:text-white text-sm leading-none">✕</button>
       </div>
-      <div ref={outputRef} className="flex-1 overflow-auto px-3 py-1 text-[#0df0ff] whitespace-pre-wrap">
-        {output.map((line, i) => (
-          <div key={i} className={line.startsWith('$') ? 'text-[#4ade80]' : 'text-[#e0e0e0]'}>
-            {line}
-          </div>
-        ))}
-        {running && <div className="text-[#fbbf24]">⏳ 执行中...</div>}
+      {/* output */}
+      <div className="flex-1 overflow-auto px-2 py-1 text-neutral-300 leading-relaxed">
+        {lines.map((l, i) => <div key={i} className="whitespace-pre-wrap break-all">{l}</div>)}
+        {busy && <div className="text-cyan-400 animate-pulse text-xs">...</div>}
       </div>
-      <form
-        onSubmit={e => { e.preventDefault(); execute(input) }}
-        className="flex items-center border-t border-[#1e1e2e] px-2"
-      >
-        <span className="text-[#4ade80] mr-1">$</span>
+      {/* input line */}
+      <div className="border-t border-[#1e1e2e] flex items-center px-2 py-1 relative">
+        <span className="text-green-400 mr-1.5 select-none font-bold">$</span>
+        <span className={`text-sm ${val ? 'text-neutral-200' : 'text-neutral-600'}`}>
+          {val || (ok === false ? '后端离线' : '点击输入命令...')}
+        </span>
+        {val && <span className="inline-block w-0.5 h-4 bg-cyan-400 ml-0.5 animate-pulse align-middle" />}
         <input
           ref={inputRef}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          className="flex-1 bg-transparent border-none outline-none text-[#f0f0f0] py-1.5 text-xs font-mono placeholder:text-[#555]"
-          placeholder="输入命令..."
-          disabled={running}
+          value={val}
+          onChange={e => setVal(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); exec() } }}
+          className="absolute opacity-0 w-0 h-0"
+          autoFocus
+          disabled={busy}
           spellCheck={false}
+          autoComplete="off"
         />
-      </form>
+      </div>
     </div>
   )
 }

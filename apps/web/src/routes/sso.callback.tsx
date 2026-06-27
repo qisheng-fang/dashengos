@@ -4,7 +4,6 @@
 // the session, and redirects to the workspace.
 
 import { useEffect, useState } from 'react'
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { http, ApiError } from '@/lib/api'
 import { useAuthStore, type AuthUser } from '@/lib/auth-store'
 
@@ -14,10 +13,6 @@ interface SSOCallbackResponse {
   expires_in: number
   user: AuthUser
 }
-
-export const Route = createFileRoute('/sso/callback')({
-  component: SSOCallbackPage,
-})
 
 function SSOCallbackPage() {
   const navigate = useNavigate()
