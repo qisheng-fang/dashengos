@@ -440,6 +440,62 @@ export async function toolRoutes(app: FastifyInstance) {
       })),
     })
   })
+
+  // ★ v8.4: Tool Discovery + Dynamic Registration
+  app.get('/discovery', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { toolGateway } = await import('../core/tool-gateway.js')
+    const cat = (req.query as any).category as string | undefined
+    const q = (req.query as any).q as string | undefined
+    let tools = cat ? toolGateway.list(cat) : toolGateway.list()
+    if (q) tools = toolGateway.discover(q)
+    return {
+      total: tools.length,
+      byCategory: toolGateway.getStats().byCategory,
+      byPermission: toolGateway.getStats().byPermission,
+      tools: tools.map(t => ({
+        name: t.name, description: t.description, category: t.category,
+        permissionLevel: t.permissionLevel, parameters: t.parameters, returns: t.returns,
+      })),
+    }
+  })
+
+  app.get('/schemas', { preHandler: [app.authenticate] }, async () => {
+    const { toolGateway } = await import('../core/tool-gateway.js')
+    return { schemas: toolGateway.getSchemas() }
+  })
+
+  app.get('/audit', { preHandler: [app.authenticate] }, async (req) => {
+    const { toolGateway } = await import('../core/tool-gateway.js')
+    const limit = parseInt((req.query as any).limit || '50', 10)
+    return { audit: toolGateway.getAuditLog(limit) }
+  })
+
+  app.post('/register', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { toolGateway } = await import('../core/tool-gateway.js')
+    const { name, description, category, permissionLevel, parameters, returns } = req.body as any
+    if (!name || !description || !category) {
+      return reply.code(400).send({ error: 'name, description, and category are required' })
+    }
+    const reg = {
+      name, description, category: category || 'external',
+      permissionLevel: permissionLevel || 'modify',
+      parameters: parameters || {}, returns: returns || { type: 'string', description: 'Result' },
+      execute: async (_args: Record<string, any>) => ({ success: true, data: 'Schema-only tool' }),
+    }
+    try {
+      toolGateway.register(reg)
+      return { registered: true, name, schema: toolGateway.get(name)?.schema }
+    } catch (e: any) {
+      return reply.code(409).send({ error: e.message })
+    }
+  })
+
+  app.delete('/:name', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const { toolGateway } = await import('../core/tool-gateway.js')
+    const { name } = req.params as { name: string }
+    const ok = toolGateway.unregister(name)
+    return { unregistered: ok, name }
+  })
 }
 
 // ====================================================================

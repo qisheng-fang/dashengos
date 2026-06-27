@@ -673,6 +673,12 @@ async function main() {
     const { startMemoryHeartbeat } = await import('./core/memory-heartbeat.js')
     startMemoryHeartbeat()
 
+    // v8.4: Dynamic Tool Gateway
+    const { toolGateway } = await import('./core/tool-gateway.js')
+    toolGateway.initTables()
+    toolGateway.loadPersisted()
+    app.log.info({ stats: toolGateway.getStats() }, 'Tool gateway initialized')
+
     // v8.3: Agent Bus + Health Registry
     const { agentHealth } = await import('./core/agent-health.js')
     agentHealth.initTables()
